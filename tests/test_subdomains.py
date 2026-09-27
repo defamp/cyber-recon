@@ -36,7 +36,6 @@ def test_extract_unique_empty():
 
 CRT = "https://crt.sh/"
 HT = "https://api.hackertarget.com/"
-CS = "https://api.certspotter.com/"
 
 
 def test_crtsh_retries_then_succeeds(fake_http, monkeypatch):
@@ -54,7 +53,6 @@ def test_crtsh_retries_then_succeeds(fake_http, monkeypatch):
                 FakeResp(200, "<html>overloaded</html>"),
                 FakeResp(200, [{"name_value": "a.x.com"}]),
             ],
-            CS: FakeResp(200, []),
             HT: FakeResp(200, "no records found"),
         }
     )
@@ -73,13 +71,7 @@ def test_crtsh_reports_last_error_after_all_attempts(fake_http, monkeypatch):
     from recon.modules import subdomains
 
     monkeypatch.setattr(subdomains, "RETRY_BACKOFF", 0)
-    fake_http(
-        {
-            CRT: FakeResp(200, "<html>busy</html>"),
-            CS: FakeResp(200, []),
-            HT: FakeResp(200, "no records found"),
-        }
-    )
+    fake_http({CRT: FakeResp(200, "<html>busy</html>"), HT: FakeResp(200, "no records found")})
     errors: list[str] = []
     assert asyncio.run(subdomains.enumerate_subdomains("x.com", errors)) == []
     assert errors == ["crt.sh: response was not JSON: 'busy' (after 3 attempts)"]
@@ -100,64 +92,7 @@ def test_crtsh_error_shows_what_the_page_said(fake_http, monkeypatch):
 
     monkeypatch.setattr(subdomains, "RETRY_BACKOFF", 0)
     page = "<html><head><title>502</title></head><body><h1>Too many requests</h1></body></html>"
-    fake_http(
-        {CRT: FakeResp(200, page), CS: FakeResp(200, []), HT: FakeResp(200, "no records found")}
-    )
+    fake_http({CRT: FakeResp(200, page), HT: FakeResp(200, "no records found")})
     errors: list[str] = []
     asyncio.run(subdomains.enumerate_subdomains("x.com", errors))
     assert errors == ["crt.sh: response was not JSON: '502 Too many requests' (after 3 attempts)"]
-
-
-def test_certspotter_alone_still_finds_subdomains(fake_http, monkeypatch):
-    """crt.sh down and HackerTarget out of quota: CertSpotter still answers."""
-    import asyncio
-
-    from conftest import FakeResp
-
-    from recon.modules import subdomains
-
-    monkeypatch.setattr(subdomains, "RETRY_BACKOFF", 0)
-    fake_http(
-        {
-            CRT: FakeResp(502),
-            CS: FakeResp(
-                200, [{"dns_names": ["x.com", "www.x.com"]}, {"dns_names": ["*.api.x.com"]}]
-            ),
-            HT: FakeResp(200, "API count exceeded - Increase Quota with Membership"),
-        }
-    )
-    errors: list[str] = []
-    result = asyncio.run(subdomains.enumerate_subdomains("x.com", errors))
-    assert result == ["api.x.com", "www.x.com"]
-    assert errors == [
-        "crt.sh: http 502 (after 3 attempts)",
-        "hackertarget: API count exceeded - Increase Quota with Membership",
-    ]
-
-
-def test_certspotter_sends_token_when_configured(fake_http, monkeypatch):
-    import asyncio
-
-    from conftest import FakeResp
-
-    from recon.modules import subdomains
-
-    seen = {}
-    fake = fake_http(
-        {
-            CRT: FakeResp(200, []),
-            CS: FakeResp(200, []),
-            HT: FakeResp(200, "no records found"),
-        }
-    )
-    orig_get = fake.get
-
-    def get(url, **kw):
-        if url.startswith(CS):
-            seen["headers"] = kw.get("headers")
-        return orig_get(url, **kw)
-
-    monkeypatch.setattr(fake, "get", get)
-    monkeypatch.setenv("CERTSPOTTER_API_KEY", "k123")
-    asyncio.run(subdomains.enumerate_subdomains("x.com", []))
-    assert seen["headers"] == {"Authorization": "Bearer k123"}
