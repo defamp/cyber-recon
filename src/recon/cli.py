@@ -21,7 +21,7 @@ from .modules.subdomains import enumerate_subdomains
 from .modules.wayback import fetch_wayback_urls
 from .notify import notify_webhook, parse_webhook_target
 from .plugins import discover as discover_user_plugins
-from .plugins import list_plugins, run_plugins
+from .plugins import get_plugin, list_plugins, run_plugins
 from .reporting.html_report import write_html_report
 from .reporting.markdown import write_markdown_report
 
@@ -46,7 +46,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run Nuclei scan on live hosts (requires nuclei binary)",
     )
-    p.add_argument("--nuclei-templates", help="Comma-separated nuclei template tags/paths")
+    p.add_argument(
+        "--nuclei-templates", help="Comma-separated nuclei template paths or IDs (nuclei -t)"
+    )
+    p.add_argument("--nuclei-tags", help="Comma-separated nuclei template tags (nuclei -tags)")
     p.add_argument(
         "--nuclei-live", action="store_true", help="Stream Nuclei findings into a live rich table"
     )
@@ -60,7 +63,7 @@ def parse_args() -> argparse.Namespace:
         "--plugin",
         action="append",
         default=[],
-        help="Run a named plugin (repeatable). e.g. --plugin severity_counter",
+        help="Run a named plugin in addition to the defaults (repeatable)",
     )
     p.add_argument("--list-plugins", action="store_true", help="List registered plugins and exit")
     p.add_argument("--webhook", help="Webhook URL for notifications (slack:URL or discord:URL)")
@@ -83,6 +86,7 @@ async def run_one(
     extra_active: bool = False,
     extra_nuclei: bool = False,
     nuclei_templates: list[str] | None = None,
+    nuclei_tags: list[str] | None = None,
     webhook: str | None = None,
     nuclei_live: bool = False,
     enrich_cve: bool = False,
@@ -103,6 +107,7 @@ async def run_one(
     results: dict = {
         "target": target,
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
+        "active": bool(active or nuclei),
         "subdomains": [],
         "alive": [],
         "urls": [],
@@ -162,6 +167,7 @@ async def run_one(
                     raw_nuclei = await run_nuclei(
                         results["alive"],
                         templates=nuclei_templates,
+                        tags=nuclei_tags,
                         on_finding=table.add,
                     )
             else:
@@ -169,6 +175,7 @@ async def run_one(
                     raw_nuclei = await run_nuclei(
                         results["alive"],
                         templates=nuclei_templates,
+                        tags=nuclei_tags,
                     )
             if enrich_cve:
                 with console.status("[bold cyan]Enriching CVEs via GitHub advisories..."):
@@ -185,12 +192,16 @@ async def run_one(
             report_errors(n_err)
 
     # Plugins (bundled + user-requested)
-    if run_default_plugins or plugin_names:
-        names = list(plugin_names or [])
-        if run_default_plugins and not names:
-            await run_plugins(results)
-        elif names:
-            await run_plugins(results, names)
+    names = [p.name for p in list_plugins() if p.active_default] if run_default_plugins else []
+    n_err = len(errors)
+    for name in plugin_names or []:
+        if get_plugin(name) is None:
+            errors.append(f"plugin: unknown plugin {name!r} (see --list-plugins)")
+        elif name not in names:
+            names.append(name)
+    report_errors(n_err)
+    if names:
+        await run_plugins(results, names)
         if "severity_summary" in results:
             sev = results["severity_summary"]
             console.print(
@@ -232,6 +243,7 @@ async def run_batch(
     nuclei: bool,
     nuclei_templates: list[str] | None,
     webhook: str | None,
+    nuclei_tags: list[str] | None = None,
     enrich_cve: bool,
     plugin_names: list[str],
     run_default_plugins: bool,
@@ -249,6 +261,7 @@ async def run_batch(
                 extra_active=active,
                 extra_nuclei=nuclei,
                 nuclei_templates=nuclei_templates,
+                nuclei_tags=nuclei_tags,
                 webhook=(webhook or cfg.notify.get("webhook")),
                 nuclei_live=nuclei_live,
                 enrich_cve=enrich_cve,
@@ -284,6 +297,7 @@ async def run(args: argparse.Namespace) -> int:
             active=args.active,
             nuclei=args.nuclei,
             nuclei_templates=args.nuclei_templates.split(",") if args.nuclei_templates else None,
+            nuclei_tags=args.nuclei_tags.split(",") if args.nuclei_tags else None,
             webhook=args.webhook,
             enrich_cve=args.enrich_cve,
             plugin_names=args.plugin,
@@ -325,6 +339,7 @@ async def run(args: argparse.Namespace) -> int:
         cfg,
         no_html=args.no_html,
         nuclei_templates=args.nuclei_templates.split(",") if args.nuclei_templates else None,
+        nuclei_tags=args.nuclei_tags.split(",") if args.nuclei_tags else None,
         webhook=args.webhook,
         nuclei_live=args.nuclei_live,
         enrich_cve=args.enrich_cve,

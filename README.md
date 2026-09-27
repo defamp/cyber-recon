@@ -49,6 +49,10 @@ PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example
 ```bash
 PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example \
   --active --nuclei --enrich-cve
+
+# Limit nuclei to template tags (-tags) or template paths/IDs (-t)
+PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example \
+  --nuclei --nuclei-tags cve,exposure --nuclei-templates http/cves/
 ```
 
 ### Diff vs baseline scan
@@ -87,7 +91,7 @@ List registered plugins:
 python3 -m recon.cli --list-plugins
 ```
 
-Run a specific plugin in addition to active defaults:
+Run a specific plugin in addition to active defaults (unknown names are reported as errors):
 ```bash
 python3 -m recon.cli --target example.com --output output/example \
   --plugin severity_counter

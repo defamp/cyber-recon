@@ -165,6 +165,7 @@ def _args(tmp_path: Path, **kw) -> argparse.Namespace:
         active=False,
         nuclei=False,
         nuclei_templates=None,
+        nuclei_tags=None,
         nuclei_live=False,
         enrich_cve=False,
         diff=None,
@@ -206,3 +207,38 @@ async def test_cli_diff_missing_baseline_fails_before_scan(tmp_path: Path, fake_
     fake_http({})
     assert await run(_args(tmp_path, diff=str(tmp_path / "nope.json"))) == 3
     assert not (tmp_path / "x" / "results.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_named_plugin_runs_in_addition_to_defaults(tmp_path: Path):
+    from recon.plugins import register, unregister
+
+    async def extra(target, results, **_):
+        return {"extra_ran": True}
+
+    register("extra_test_plugin", extra)
+    try:
+        cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["subdomains", "wayback"])
+        result = await run_one(cfg, no_html=True, plugin_names=["extra_test_plugin"])
+    finally:
+        unregister("extra_test_plugin")
+    assert result["extra_ran"] is True
+    assert "severity_summary" in result  # default plugin still ran
+    assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_plugin_is_reported(tmp_path: Path):
+    cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["subdomains", "wayback"])
+    result = await run_one(cfg, no_html=True, plugin_names=["does_not_exist"])
+    assert result["errors"] == ["plugin: unknown plugin 'does_not_exist' (see --list-plugins)"]
+
+
+@pytest.mark.asyncio
+async def test_html_header_reflects_scan_mode(tmp_path: Path):
+    skip = ["subdomains", "wayback"]
+    await run_one(_cfg(target="x.com", output=str(tmp_path / "p"), skip=skip), no_html=False)
+    cfg = _cfg(target="x.com", output=str(tmp_path / "a"), skip=skip, active=True)
+    await run_one(cfg, no_html=False)
+    assert "passive only" in (tmp_path / "p" / "report.html").read_text()
+    assert "active modules enabled" in (tmp_path / "a" / "report.html").read_text()

@@ -20,6 +20,7 @@ async def run_nuclei(
     *,
     severity: list[str] | None = None,
     templates: list[str] | None = None,
+    tags: list[str] | None = None,
     timeout: int = 300,
     on_finding: Callable[[dict], None] | None = None,
 ) -> list[dict]:
@@ -59,6 +60,8 @@ async def run_nuclei(
     ]
     if templates:
         cmd.extend(["-t", ",".join(templates)])
+    if tags:
+        cmd.extend(["-tags", ",".join(tags)])
 
     findings: list[dict] = []
 

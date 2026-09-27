@@ -79,3 +79,27 @@ def test_run_nuclei_timeout_kills_process(tmp_path, monkeypatch):
     res = asyncio.run(nuclei.run_nuclei([{"url": "https://x.com/"}], timeout=1))
     assert res[0] == {"template-id": "t1"}
     assert "timed out" in res[-1]["_warning"]
+
+
+def test_run_nuclei_passes_templates_and_tags(tmp_path, monkeypatch):
+    import asyncio
+    import json
+
+    from recon.modules import nuclei
+
+    # Echo argv back as a finding so the test can inspect the command line
+    bin_path = _fake_nuclei(
+        tmp_path,
+        'python3 -c \'import json,sys; print(json.dumps({"argv": sys.argv[1:]}))\' "$@"\n',
+    )
+    monkeypatch.setattr(nuclei, "NUCLEI_BIN", bin_path)
+    res = asyncio.run(
+        nuclei.run_nuclei(
+            [{"url": "https://x.com/"}], templates=["http/cves/"], tags=["cve", "rce"], timeout=10
+        )
+    )
+    argv = res[0]["argv"]
+    assert argv[argv.index("-t") + 1] == "http/cves/"
+    assert argv[argv.index("-tags") + 1] == "cve,rce"
+    assert "-jsonl" in argv and "-disable-update-check" in argv
+    json.dumps(res)

@@ -88,7 +88,7 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
 <header>
   <div>
     <h1>Recon Report — <span style="color:var(--accent)">{target}</span></h1>
-    <div class="meta">Generated {timestamp} &middot; cyber-recon v0.1.0 &middot; passive only</div>
+    <div class="meta">Generated {timestamp} &middot; cyber-recon v0.1.0 &middot; {mode}</div>
   </div>
   <input type="search" id="globalSearch" class="search-input" placeholder="Search report (URL, host, secret, finding)…">
 </header>
@@ -413,5 +413,6 @@ def write_html_report(results: dict, path: Path) -> None:
         secrets_html=_render_secrets(secrets),
         nuclei_html=_render_nuclei(nuclei),
         errors_html=_render_errors(results.get("errors") or []),
+        mode="active modules enabled" if results.get("active") else "passive only",
     )
     path.write_text(html_out)
