@@ -51,13 +51,8 @@ async def _scan_url(session: aiohttp.ClientSession, url: str) -> list[Finding]:
         async with session.get(
             url, timeout=aiohttp.ClientTimeout(total=TIMEOUT), allow_redirects=True
         ) as r:
-            if (
-                r.status >= 400
-                or "javascript" not in (r.headers.get("Content-Type", "") or "").lower()
-                and not url.endswith((".js", ".mjs", ".cjs"))
-            ):
-                # be lenient — only check content-type hint OR extension
-                pass
+            if r.status >= 400:
+                return []
             body = await r.text(errors="ignore")
     except Exception:
         return []

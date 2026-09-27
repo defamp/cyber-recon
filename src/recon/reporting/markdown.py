@@ -12,6 +12,13 @@ def write_markdown_report(results: dict, path: Path) -> None:
     lines.append(f"# Recon Report — `{target}`\n")
     lines.append(f"_Generated: {now}_\n")
 
+    errors = results.get("errors") or []
+    if errors:
+        lines.append(f"## ⚠ Source errors ({len(errors)})\n")
+        lines.append("_Counts below may be incomplete — these sources failed:_\n")
+        lines.extend(f"- {e}" for e in errors)
+        lines.append("")
+
     subdomains = results.get("subdomains", [])
     lines.append(f"## Subdomains ({len(subdomains)})\n")
     if subdomains:

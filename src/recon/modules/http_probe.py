@@ -102,7 +102,8 @@ async def probe_targets(hosts: Iterable[str]) -> list[dict]:
 
     async def bounded(host: str) -> dict | None:
         async with sem:
-            if not _resolve(host):
+            # dnspython is blocking; run it off the event loop so probes stay concurrent
+            if not await asyncio.to_thread(_resolve, host):
                 return None
             info = await _probe_one(session, host)
             return asdict(info) if info else None

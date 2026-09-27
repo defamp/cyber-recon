@@ -115,3 +115,15 @@ def test_diff_summary_format():
 def test_diff_target_propagated():
     d = diff_results(_res("baseline.com"), _res("current.com"))
     assert d["target"] == "current.com"
+
+
+def test_diff_cors_ignores_non_reflecting_hosts():
+    """cors_reflective holds every probed host; only reflecting ones count."""
+    b = _res("x.com", cors_reflective={"a.x.com": {"reflects": False}})
+    c = _res(
+        "x.com",
+        cors_reflective={"a.x.com": {"reflects": False}, "b.x.com": {"reflects": False}},
+    )
+    d = diff_results(b, c)
+    assert d["cors_reflective_added"] == []
+    assert d["summary"] == "no changes"

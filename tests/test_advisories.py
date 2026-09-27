@@ -1,5 +1,7 @@
 import asyncio
 
+from conftest import FakeResp
+
 from recon.modules.advisories import _extract_cves, enrich_nuclei
 
 
@@ -45,7 +47,7 @@ def test_enrich_nuclei_no_cve_passthrough():
     assert out == findings  # unchanged
 
 
-def test_enrich_nuclei_attaches_advisory(respx_mock):
+def test_enrich_nuclei_attaches_advisory(fake_http):
     payload = [
         {
             "ghsa_id": "GHSA-jfh8-c2jp-5v3q",
@@ -56,37 +58,26 @@ def test_enrich_nuclei_attaches_advisory(respx_mock):
             "html_url": "https://github.com/advisories/GHSA-jfh8-c2jp-5v3q",
         }
     ]
-    respx_mock.get("https://api.github.com/advisories").respond(
-        200,
-        json=payload,
-    )
+    fake = fake_http({"https://api.github.com/advisories": FakeResp(200, payload)})
     findings = [{"template-id": "CVE-2021-44228", "info": {"severity": "critical"}}]
     out = asyncio.run(enrich_nuclei(findings))
-    assert "gh_advisory" in out[0]
-    assert out[0]["gh_advisory"][0]["cve"] == "CVE-2021-44228"
-    assert out[0]["gh_advisory"][0]["ghsa_id"] == "GHSA-jfh8-c2jp-5v3q"
+    assert fake.urls == ["https://api.github.com/advisories?cve_id=CVE-2021-44228"]
+    adv = out[0]["gh_advisory"][0]
+    assert adv["cve"] == "CVE-2021-44228"
+    assert adv["ghsa_id"] == "GHSA-jfh8-c2jp-5v3q"
+    assert adv["severity"] == "critical"
+    assert adv["cvss"] == 10.0
 
 
-def test_enrich_nuclei_404_handled(respx_mock):
-    respx_mock.get("https://api.github.com/advisories").respond(404)
+def test_enrich_nuclei_404_handled(fake_http):
+    fake_http({"https://api.github.com/advisories": FakeResp(404)})
     findings = [{"template-id": "CVE-9999-99999", "info": {}}]
     out = asyncio.run(enrich_nuclei(findings))
     assert out == findings  # unchanged when 404
 
 
-class _FakeResp:
-    def __init__(self, status, body):
-        self.status = status
-        self._body = body
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
-    def headers(self):
-        return {"Content-Type": "application/json"}
-
-    async def json(self, content_type=None):
-        return self._body
+def test_enrich_nuclei_non_200_records_error(fake_http):
+    fake_http({"https://api.github.com/advisories": FakeResp(403)})
+    findings = [{"template-id": "CVE-2021-44228", "info": {}}]
+    out = asyncio.run(enrich_nuclei(findings))
+    assert out[0]["gh_advisory"] == [{"cve": "CVE-2021-44228", "_error": "http 403"}]

@@ -82,9 +82,16 @@ def diff_results(baseline: dict, current: dict) -> dict[str, Any]:
     # Drop zero entries for a cleaner delta
     sev_delta = {k: v for k, v in sev_delta.items() if v != 0}
 
-    # CORS reflective diff
-    b_cors = set((baseline.get("cors_reflective") or {}).keys())
-    c_cors = set((current.get("cors_reflective") or {}).keys())
+    # CORS reflective diff — only hosts that actually reflect, not every probed host
+    def _reflecting(res: dict) -> set:
+        return {
+            host
+            for host, v in (res.get("cors_reflective") or {}).items()
+            if isinstance(v, dict) and v.get("reflects")
+        }
+
+    b_cors = _reflecting(baseline)
+    c_cors = _reflecting(current)
     cors_added = sorted(c_cors - b_cors)
     cors_removed = sorted(b_cors - c_cors)
 
