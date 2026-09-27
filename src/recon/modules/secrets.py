@@ -16,10 +16,11 @@ PATTERNS: dict[str, str] = {
     "aws_secret": r"(?i)aws[_\\-]?secret[_\\-]?(?:access[_\\-]?)?key.{0,40}?[\"']([A-Za-z0-9/+=]{40})[\"']",
     "github_pat": r"gh[pousr]_[A-Za-z0-9]{36,}",
     "slack_token": r"xox[abpr]-[0-9A-Za-z-]{10,48}",
-    "google_api": r"AIza[0-9A-Za-z_\\-]{35}",
+    "google_api": r"AIza[0-9A-Za-z_-]{35}",
     "private_key": r"-----BEGIN (?:RSA|EC|OPENSSH|PRIVATE) (?:PRIVATE )?KEY-----",
-    "jwt": r"eyJ[A-Za-z0-9_\\-]{10,}\\.[A-Za-z0-9_\\-]{10,}\\.[A-Za-z0-9_\\-]{10,}",
-    "generic_api_key": r"(?i)(?:api[_-]?key|apikey|secret)[\\\"'\\s:=]{1,5}[\"']([A-Za-z0-9_\\-]{16,64})[\"']",
+    "jwt": r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+    "stripe_key": r"sk_(?:live|test)_[0-9a-zA-Z]{24,}",
+    "generic_api_key": r"(?i)(?:api[_-]?key|apikey|secret)[\"' :=]{1,5}[\"']([A-Za-z0-9_-]{16,64})[\"']",
 }
 
 
