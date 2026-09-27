@@ -32,3 +32,67 @@ def test_extract_unique_lowercases():
 
 def test_extract_unique_empty():
     assert _extract_unique("example.com", []) == []
+
+
+CRT = "https://crt.sh/"
+HT = "https://api.hackertarget.com/"
+
+
+def test_crtsh_retries_then_succeeds(fake_http, monkeypatch):
+    import asyncio
+
+    from conftest import FakeResp
+
+    from recon.modules import subdomains
+
+    monkeypatch.setattr(subdomains, "RETRY_BACKOFF", 0)
+    fake = fake_http(
+        {
+            CRT: [
+                FakeResp(502),
+                FakeResp(200, "<html>overloaded</html>"),
+                FakeResp(200, [{"name_value": "a.x.com"}]),
+            ],
+            HT: FakeResp(200, "no records found"),
+        }
+    )
+    errors: list[str] = []
+    result = asyncio.run(subdomains.enumerate_subdomains("x.com", errors))
+    assert result == ["a.x.com"]
+    assert errors == []
+    assert sum(u.startswith(CRT) for u in fake.urls) == 3
+
+
+def test_crtsh_reports_last_error_after_all_attempts(fake_http, monkeypatch):
+    import asyncio
+
+    from conftest import FakeResp
+
+    from recon.modules import subdomains
+
+    monkeypatch.setattr(subdomains, "RETRY_BACKOFF", 0)
+    fake_http({CRT: FakeResp(200, "<html>busy</html>"), HT: FakeResp(200, "no records found")})
+    errors: list[str] = []
+    assert asyncio.run(subdomains.enumerate_subdomains("x.com", errors)) == []
+    assert errors == ["crt.sh: response was not JSON: 'busy' (after 3 attempts)"]
+
+
+def test_crtsh_query_matches_subdomains_only():
+    from recon.modules.subdomains import CRT_SH_URL
+
+    assert CRT_SH_URL.format(domain="x.com") == "https://crt.sh/?q=%25.x.com&output=json"
+
+
+def test_crtsh_error_shows_what_the_page_said(fake_http, monkeypatch):
+    import asyncio
+
+    from conftest import FakeResp
+
+    from recon.modules import subdomains
+
+    monkeypatch.setattr(subdomains, "RETRY_BACKOFF", 0)
+    page = "<html><head><title>502</title></head><body><h1>Too many requests</h1></body></html>"
+    fake_http({CRT: FakeResp(200, page), HT: FakeResp(200, "no records found")})
+    errors: list[str] = []
+    asyncio.run(subdomains.enumerate_subdomains("x.com", errors))
+    assert errors == ["crt.sh: response was not JSON: '502 Too many requests' (after 3 attempts)"]

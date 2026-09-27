@@ -18,6 +18,7 @@ from .modules.http_probe import probe_targets
 from .modules.nuclei import nuclei_available, run_nuclei
 from .modules.secrets import scan_secrets
 from .modules.subdomains import enumerate_subdomains
+from .modules.wayback import DEFAULT_LIMIT as DEFAULT_WAYBACK_LIMIT
 from .modules.wayback import fetch_wayback_urls
 from .notify import notify_webhook, parse_webhook_target
 from .plugins import discover as discover_user_plugins
@@ -26,6 +27,7 @@ from .reporting.html_report import write_html_report
 from .reporting.markdown import write_markdown_report
 
 console = Console()
+MAX_PROBE_FAILURES_SHOWN = 5
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,6 +73,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-wayback", action="store_true")
     p.add_argument("--no-secrets", action="store_true")
     p.add_argument(
+        "--no-http",
+        action="store_true",
+        help="Skip HTTP probing (and with it CORS/Nuclei); nothing is sent to the target",
+    )
+    p.add_argument(
+        "--wayback-limit",
+        type=int,
+        default=DEFAULT_WAYBACK_LIMIT,
+        help=f"Max Wayback URLs to fetch (default {DEFAULT_WAYBACK_LIMIT})",
+    )
+    p.add_argument(
         "--no-html", action="store_true", help="Skip HTML report (still emits Markdown + JSON)"
     )
     p.add_argument(
@@ -90,6 +103,7 @@ async def run_one(
     webhook: str | None = None,
     nuclei_live: bool = False,
     enrich_cve: bool = False,
+    wayback_limit: int = DEFAULT_WAYBACK_LIMIT,
     plugin_names: list[str] | None = None,
     run_default_plugins: bool = True,
 ) -> dict:
@@ -130,15 +144,34 @@ async def run_one(
         console.print(f"  {mark} {len(results['subdomains'])} subdomains")
         report_errors(n_err)
 
-    if results["subdomains"] and "http" not in skip:
+    if "http" not in skip:
+        # Probe the target itself too: it is often the main site, and without it
+        # a target with no discovered subdomains never reaches CORS/Nuclei.
+        hosts = [target.lower()] + [h for h in results["subdomains"] if h != target.lower()]
+        failures: dict[str, str] = {}
         with console.status("[bold green]Probing live hosts..."):
-            results["alive"] = await probe_targets(results["subdomains"])
-        console.print(f"  [green]✓[/green] {len(results['alive'])} live hosts")
+            results["alive"] = await probe_targets(hosts, failures)
+        results["probe_failures"] = failures
+        n_err = len(errors)
+        # Dead subdomains are normal; an unreachable target is worth flagging.
+        if hosts[0] in failures:
+            errors.append(f"http: {hosts[0]} unreachable ({failures[hosts[0]]})")
+        mark = "[green]✓[/green]" if len(errors) == n_err else "[yellow]⚠[/yellow]"
+        console.print(f"  {mark} {len(results['alive'])}/{len(hosts)} live hosts")
+        report_errors(n_err)
+        other = [(h, r) for h, r in failures.items() if h != hosts[0]]
+        for host, reason in sorted(other)[:MAX_PROBE_FAILURES_SHOWN]:
+            console.print(f"    [dim]· {host}: {reason}[/dim]")
+        if len(other) > MAX_PROBE_FAILURES_SHOWN:
+            console.print(
+                f"    [dim]· … {len(other) - MAX_PROBE_FAILURES_SHOWN} more "
+                "(see probe_failures in results.json)[/dim]"
+            )
 
     if "wayback" not in skip:
         n_err = len(errors)
         with console.status("[bold green]Fetching Wayback URLs..."):
-            results["urls"] = await fetch_wayback_urls(target, errors)
+            results["urls"] = await fetch_wayback_urls(target, errors, limit=wayback_limit)
         mark = "[green]✓[/green]" if len(errors) == n_err else "[yellow]⚠[/yellow]"
         console.print(f"  {mark} {len(results['urls'])} historical URLs")
         report_errors(n_err)
@@ -146,15 +179,21 @@ async def run_one(
     if "secrets" not in skip and results["urls"]:
         with console.status("[bold green]Scanning JS files for secrets..."):
             results["secrets"] = await scan_secrets(results["urls"])
-        console.print(f"  [green]✓[/green] {len(results['secrets'])} potential secrets")
+        by_conf = {c: 0 for c in ("high", "medium", "low")}
+        for sec in results["secrets"]:
+            by_conf[sec.get("confidence", "low")] += 1
+        mark = "[red]⚠[/red]" if by_conf["high"] else "[green]✓[/green]"
+        console.print(
+            f"  {mark} {len(results['secrets'])} potential secrets "
+            f"(high={by_conf['high']} medium={by_conf['medium']} low={by_conf['low']})"
+        )
 
     if active and results["alive"]:
         with console.status("[bold yellow]Testing CORS reflection (active)..."):
             results["cors_reflective"] = await check_cors_reflection(results["alive"])
         n_reflect = sum(1 for v in results["cors_reflective"].values() if v.get("reflects"))
-        console.print(
-            f"  [yellow]⚠[/yellow] {n_reflect}/{len(results['alive'])} hosts reflect Origin"
-        )
+        mark = "[yellow]⚠[/yellow]" if n_reflect else "[green]✓[/green]"
+        console.print(f"  {mark} {n_reflect}/{len(results['alive'])} hosts reflect Origin")
 
     if nuclei and results["alive"]:
         if not nuclei_available():
@@ -184,7 +223,8 @@ async def run_one(
             else:
                 results["nuclei"] = raw_nuclei
             real = [f for f in results["nuclei"] if not f.get("_warning")]
-            console.print(f"  [yellow]⚠[/yellow] {len(real)} Nuclei findings")
+            mark = "[yellow]⚠[/yellow]" if real else "[green]✓[/green]"
+            console.print(f"  {mark} {len(real)} Nuclei findings")
             n_err = len(errors)
             errors.extend(
                 f"nuclei: {f['_warning']}" for f in results["nuclei"] if f.get("_warning")
@@ -245,6 +285,7 @@ async def run_batch(
     webhook: str | None,
     nuclei_tags: list[str] | None = None,
     enrich_cve: bool,
+    wayback_limit: int = DEFAULT_WAYBACK_LIMIT,
     plugin_names: list[str],
     run_default_plugins: bool,
     nuclei_live: bool = False,
@@ -265,6 +306,7 @@ async def run_batch(
                 webhook=(webhook or cfg.notify.get("webhook")),
                 nuclei_live=nuclei_live,
                 enrich_cve=enrich_cve,
+                wayback_limit=wayback_limit,
                 plugin_names=plugin_names,
                 run_default_plugins=run_default_plugins,
             )
@@ -290,6 +332,10 @@ async def run(args: argparse.Namespace) -> int:
     if discovered:
         console.print(f"[dim]Discovered user plugins: {discovered}[/dim]")
 
+    if args.wayback_limit < 1:
+        console.print("[red]--wayback-limit must be at least 1.[/red]")
+        return 2
+
     if args.batch:
         return await run_batch(
             Path(args.batch),
@@ -300,6 +346,7 @@ async def run(args: argparse.Namespace) -> int:
             nuclei_tags=args.nuclei_tags.split(",") if args.nuclei_tags else None,
             webhook=args.webhook,
             enrich_cve=args.enrich_cve,
+            wayback_limit=args.wayback_limit,
             plugin_names=args.plugin,
             run_default_plugins=not args.no_plugins,
             nuclei_live=args.nuclei_live,
@@ -325,6 +372,7 @@ async def run(args: argparse.Namespace) -> int:
             ("subdomains", args.no_subdomains),
             ("wayback", args.no_wayback),
             ("secrets", args.no_secrets),
+            ("http", args.no_http),
         )
         if flag
     ]
@@ -343,6 +391,7 @@ async def run(args: argparse.Namespace) -> int:
         webhook=args.webhook,
         nuclei_live=args.nuclei_live,
         enrich_cve=args.enrich_cve,
+        wayback_limit=args.wayback_limit,
         plugin_names=args.plugin,
         run_default_plugins=not args.no_plugins,
     )

@@ -3,6 +3,8 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..modules.nuclei import finding_name
+
 
 def write_markdown_report(results: dict, path: Path) -> None:
     target = results.get("target", "?")
@@ -56,17 +58,43 @@ def write_markdown_report(results: dict, path: Path) -> None:
         lines.append("_none_")
     lines.append("")
 
+    findings = [f for f in results.get("nuclei", []) or [] if not f.get("_warning")]
+    lines.append(f"## Nuclei findings ({len(findings)})\n")
+    if findings:
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        findings = sorted(
+            findings,
+            key=lambda f: order.get(((f.get("info") or {}).get("severity") or "info").lower(), 5),
+        )
+        lines.append("| Severity | Template | Name | Matched at |")
+        lines.append("|----------|----------|------|------------|")
+        for f in findings:
+            lines.append(
+                "| {sev} | {tid} | {name} | {at} |".format(
+                    sev=((f.get("info") or {}).get("severity") or "info").lower(),
+                    tid=f.get("template-id", ""),
+                    name=finding_name(f).replace("|", "\\|"),
+                    at=f.get("matched-at", ""),
+                )
+            )
+    else:
+        lines.append("_none_")
+    lines.append("")
+
     secrets = results.get("secrets", [])
     lines.append(f"## Potential secrets ({len(secrets)})\n")
     if secrets:
-        lines.append("| Source | Pattern | Match |")
-        lines.append("|--------|---------|-------|")
+        lines.append("| Confidence | Pattern | Match | Seen in |")
+        lines.append("|------------|---------|-------|---------|")
         for s in secrets:
+            n = s.get("occurrences", 1)
+            seen = s.get("url", "") + (f" (+{n - 1} more)" if n > 1 else "")
             lines.append(
-                "| {url} | {pat} | `{m}` |".format(
-                    url=s.get("url", ""),
+                "| {conf} | {pat} | `{m}` | {seen} |".format(
+                    conf=s.get("confidence", ""),
                     pat=s.get("pattern", ""),
-                    m=(s.get("match") or "")[:80],
+                    m=(s.get("match") or "")[:80].replace("|", "\\|"),
+                    seen=seen,
                 )
             )
     else:

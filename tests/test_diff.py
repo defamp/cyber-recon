@@ -127,3 +127,12 @@ def test_diff_cors_ignores_non_reflecting_hosts():
     d = diff_results(b, c)
     assert d["cors_reflective_added"] == []
     assert d["summary"] == "no changes"
+
+
+def test_diff_secret_identity_ignores_source_url():
+    """The same secret seen via a different JS file is not a new finding."""
+    b = _res("x.com", secrets=[{"url": "https://x.com/a.js", "pattern": "jwt", "match": "eyJ.x.y"}])
+    c = _res("x.com", secrets=[{"url": "https://x.com/b.js", "pattern": "jwt", "match": "eyJ.x.y"}])
+    d = diff_results(b, c)
+    assert d["added"]["secrets"] == []
+    assert d["removed"]["secrets"] == []

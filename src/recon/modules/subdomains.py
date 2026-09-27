@@ -1,12 +1,15 @@
 """Subdomain enumeration — passive only."""
 
 import asyncio
+import json
 import re
 from collections.abc import Iterable
 
 import aiohttp
 
-CRT_SH_URL = "https://crt.sh/?q=%25{domain}&output=json"
+# %25 is "%", so q=%.example.com: subdomains only (the dot keeps it from
+# also matching e.g. notexample.com, and makes the query cheaper for crt.sh)
+CRT_SH_URL = "https://crt.sh/?q=%25.{domain}&output=json"
 HACKERTARGET_URL = "https://api.hackertarget.com/hostsearch/?q={domain}"
 
 
@@ -20,26 +23,52 @@ def _extract_unique(domain: str, hosts: Iterable[str]) -> list[str]:
     return sorted(seen)
 
 
+def _snippet(body: str, limit: int = 80) -> str:
+    """First bit of a non-JSON response (usually an HTML error page), tags
+    stripped, so the report shows what the source actually said."""
+    text = re.sub(r"<[^>]+>", " ", body)
+    return " ".join(text.split())[:limit]
+
+
 def _describe(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
+CRT_SH_ATTEMPTS = 3
+RETRY_BACKOFF = 2.0  # seconds, doubled after each failed attempt
+
+
 async def _fetch_crtsh(session: aiohttp.ClientSession, domain: str, errors: list[str]) -> list[str]:
-    try:
-        async with session.get(
-            CRT_SH_URL.format(domain=domain), timeout=aiohttp.ClientTimeout(total=30)
-        ) as r:
-            if r.status != 200:
-                errors.append(f"crt.sh: http {r.status}")
-                return []
-            data = await r.json(content_type=None)
-    except Exception as exc:
-        errors.append(f"crt.sh: {_describe(exc)}")
-        return []
-    if not isinstance(data, list):
-        errors.append("crt.sh: unexpected response format")
-        return []
-    return [row["name_value"] for row in data if isinstance(row, dict) and row.get("name_value")]
+    """crt.sh is frequently overloaded and answers with 5xx or an HTML error
+    page, so retry with backoff and only report the last failure."""
+    last_error = ""
+    for attempt in range(CRT_SH_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(RETRY_BACKOFF * 2 ** (attempt - 1))
+        body = ""
+        try:
+            async with session.get(
+                CRT_SH_URL.format(domain=domain), timeout=aiohttp.ClientTimeout(total=30)
+            ) as r:
+                if r.status != 200:
+                    last_error = f"http {r.status}"
+                    continue
+                body = await r.text()
+            data = json.loads(body)
+        except ValueError:
+            last_error = f"response was not JSON: {_snippet(body)!r}"
+            continue
+        except Exception as exc:
+            last_error = _describe(exc)
+            continue
+        if not isinstance(data, list):
+            last_error = "unexpected response format"
+            continue
+        return [
+            row["name_value"] for row in data if isinstance(row, dict) and row.get("name_value")
+        ]
+    errors.append(f"crt.sh: {last_error} (after {CRT_SH_ATTEMPTS} attempts)")
+    return []
 
 
 async def _fetch_hackertarget(
@@ -73,10 +102,16 @@ async def enumerate_subdomains(domain: str, errors: list[str] | None = None) -> 
         errors = []
     domain = domain.lower().strip()
     headers = {"User-Agent": "cyber-recon/0.1 (+passive)"}
+    # Per-source lists keep the reported order stable regardless of which
+    # request (or retry) finishes first.
+    crt_errors: list[str] = []
+    ht_errors: list[str] = []
     async with aiohttp.ClientSession(headers=headers) as session:
         crt_hosts, ht_hosts = await asyncio.gather(
-            _fetch_crtsh(session, domain, errors), _fetch_hackertarget(session, domain, errors)
+            _fetch_crtsh(session, domain, crt_errors),
+            _fetch_hackertarget(session, domain, ht_errors),
         )
+    errors.extend(crt_errors + ht_errors)
     # crt.sh sometimes returns multi-line name_value
     flat: list[str] = []
     for blob in crt_hosts:

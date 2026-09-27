@@ -103,3 +103,47 @@ def test_run_nuclei_passes_templates_and_tags(tmp_path, monkeypatch):
     assert argv[argv.index("-tags") + 1] == "cve,rce"
     assert "-jsonl" in argv and "-disable-update-check" in argv
     json.dumps(res)
+
+
+def _argv_of(tmp_path, monkeypatch, **kw):
+    import asyncio
+
+    from recon.modules import nuclei
+
+    bin_path = _fake_nuclei(
+        tmp_path,
+        'python3 -c \'import json,sys; print(json.dumps({"argv": sys.argv[1:]}))\' "$@"\n',
+    )
+    monkeypatch.setattr(nuclei, "NUCLEI_BIN", bin_path)
+    res = asyncio.run(nuclei.run_nuclei([{"url": "https://x.com/"}], timeout=10, **kw))
+    return res[0]["argv"]
+
+
+def test_default_scan_filters_to_critical_high_medium(tmp_path, monkeypatch):
+    argv = _argv_of(tmp_path, monkeypatch)
+    assert argv[argv.index("-severity") + 1] == "critical,high,medium"
+
+
+def test_explicit_tags_are_not_severity_filtered(tmp_path, monkeypatch):
+    """`tech` templates are all severity info; filtering would drop every one."""
+    argv = _argv_of(tmp_path, monkeypatch, tags=["tech"])
+    assert "-severity" not in argv
+
+
+def test_explicit_severity_still_applies_with_tags(tmp_path, monkeypatch):
+    argv = _argv_of(tmp_path, monkeypatch, tags=["tech"], severity=["info"])
+    assert argv[argv.index("-severity") + 1] == "info"
+
+
+def test_finding_name_distinguishes_matchers():
+    from recon.modules.nuclei import finding_name
+
+    base = {"template-id": "http-missing-security-headers", "info": {"name": "Missing Headers"}}
+    assert finding_name(base) == "Missing Headers"
+    assert (
+        finding_name({**base, "matcher-name": "x-frame-options"})
+        == "Missing Headers [x-frame-options]"
+    )
+    tls = {"info": {"name": "Weak Ciphers"}, "extracted-results": ["a", "b", "c", "d"]}
+    assert finding_name(tls) == "Weak Ciphers [a, b, c…]"
+    assert finding_name({"template-id": "t1"}) == "t1"
