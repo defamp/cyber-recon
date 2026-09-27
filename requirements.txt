@@ -3,3 +3,7 @@ dnspython>=2.6.1
 rich>=13.7.0
 aiohttp>=3.9.0
 pyyaml>=6.0
+
+# Optional external tool:
+# nuclei >= 3.0  — install from https://github.com/projectdiscovery/nuclei
+# Only required if you use --nuclei flag.

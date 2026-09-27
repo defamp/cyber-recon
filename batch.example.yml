@@ -1,0 +1,19 @@
+# Example batch config — multiple targets with per-target overrides.
+# Usage: python -m recon.cli --batch batch.yml
+
+targets:
+  - domain: example.com
+    output: output/example
+    # passive only
+
+  - domain: foo.example.com
+    output: output/foo
+    active: true            # enable CORS reflection probe
+    skip: [wayback]         # skip wayback module for this target
+
+  - domain: bar.example.com
+    output: output/bar
+    active: true
+    nuclei: true            # requires nuclei binary in PATH
+    notify:
+      webhook: "slack:https://hooks.slack.com/services/T000/B000/XXXXX"
