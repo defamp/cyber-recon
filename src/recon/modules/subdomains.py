@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import re
 from collections.abc import Iterable
 
@@ -11,6 +12,12 @@ import aiohttp
 # also matching e.g. notexample.com, and makes the query cheaper for crt.sh)
 CRT_SH_URL = "https://crt.sh/?q=%25.{domain}&output=json"
 HACKERTARGET_URL = "https://api.hackertarget.com/hostsearch/?q={domain}"
+CERTSPOTTER_URL = (
+    "https://api.certspotter.com/v1/issuances"
+    "?domain={domain}&include_subdomains=true&expand=dns_names"
+)
+# Optional: unauthenticated CertSpotter requests have a low hourly limit
+CERTSPOTTER_TOKEN_ENV = "CERTSPOTTER_API_KEY"
 
 
 def _extract_unique(domain: str, hosts: Iterable[str]) -> list[str]:
@@ -92,8 +99,49 @@ async def _fetch_hackertarget(
     return hosts
 
 
+async def _fetch_certspotter(
+    session: aiohttp.ClientSession, domain: str, errors: list[str]
+) -> list[str]:
+    """Certificate Transparency via SSLMate CertSpotter: an independent CT
+    source, so results don't depend on crt.sh being up. Uses the first page
+    of issuances only."""
+    headers = {}
+    token = os.environ.get(CERTSPOTTER_TOKEN_ENV)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        async with session.get(
+            CERTSPOTTER_URL.format(domain=domain),
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as r:
+            if r.status == 429:
+                errors.append(
+                    f"certspotter: rate limited (http 429); set {CERTSPOTTER_TOKEN_ENV} "
+                    "for a higher limit"
+                )
+                return []
+            if r.status != 200:
+                errors.append(f"certspotter: http {r.status}")
+                return []
+            data = await r.json(content_type=None)
+    except Exception as exc:
+        errors.append(f"certspotter: {_describe(exc)}")
+        return []
+    if not isinstance(data, list):
+        errors.append("certspotter: unexpected response format")
+        return []
+    return [
+        name
+        for issuance in data
+        if isinstance(issuance, dict)
+        for name in issuance.get("dns_names") or []
+        if isinstance(name, str)
+    ]
+
+
 async def enumerate_subdomains(domain: str, errors: list[str] | None = None) -> list[str]:
-    """Return sorted unique subdomains from crt.sh + HackerTarget.
+    """Return sorted unique subdomains from crt.sh + CertSpotter + HackerTarget.
 
     Source failures are appended to ``errors`` (if given) instead of being
     silently treated as "no results".
@@ -105,16 +153,19 @@ async def enumerate_subdomains(domain: str, errors: list[str] | None = None) -> 
     # Per-source lists keep the reported order stable regardless of which
     # request (or retry) finishes first.
     crt_errors: list[str] = []
+    cs_errors: list[str] = []
     ht_errors: list[str] = []
     async with aiohttp.ClientSession(headers=headers) as session:
-        crt_hosts, ht_hosts = await asyncio.gather(
+        crt_hosts, cs_hosts, ht_hosts = await asyncio.gather(
             _fetch_crtsh(session, domain, crt_errors),
+            _fetch_certspotter(session, domain, cs_errors),
             _fetch_hackertarget(session, domain, ht_errors),
         )
-    errors.extend(crt_errors + ht_errors)
+    errors.extend(crt_errors + cs_errors + ht_errors)
     # crt.sh sometimes returns multi-line name_value
     flat: list[str] = []
     for blob in crt_hosts:
         flat.extend(re.split(r"\s+", blob))
+    flat.extend(cs_hosts)
     flat.extend(ht_hosts)
     return _extract_unique(domain, flat)

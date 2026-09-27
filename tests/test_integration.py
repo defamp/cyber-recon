@@ -115,6 +115,7 @@ def test_cli_help_mentions_new_flags(capsys):
 
 CRT = "https://crt.sh/"
 HT = "https://api.hackertarget.com/"
+CS = "https://api.certspotter.com/"
 WB = "https://web.archive.org/"
 
 
@@ -124,6 +125,7 @@ async def test_run_one_records_source_errors(tmp_path: Path, fake_http, monkeypa
     fake_http(
         {
             CRT: FakeResp(502),
+            CS: FakeResp(429),
             HT: FakeResp(200, "API count exceeded - Increase Quota with Membership"),
             WB: aiohttp.ClientConnectionError("connection refused"),
         }
@@ -132,6 +134,7 @@ async def test_run_one_records_source_errors(tmp_path: Path, fake_http, monkeypa
     result = await run_one(cfg, no_html=False)
     assert result["errors"] == [
         "crt.sh: http 502 (after 3 attempts)",
+        "certspotter: rate limited (http 429); set CERTSPOTTER_API_KEY for a higher limit",
         "hackertarget: API count exceeded - Increase Quota with Membership",
         "wayback: ClientConnectionError: connection refused",
     ]
@@ -146,6 +149,7 @@ async def test_run_one_no_errors_on_success(tmp_path: Path, fake_http):
     fake_http(
         {
             CRT: FakeResp(200, [{"name_value": "a.x.com\nb.x.com"}]),
+            CS: FakeResp(200, [{"dns_names": ["x.com", "*.d.x.com", "a.x.com"]}]),
             HT: FakeResp(200, "c.x.com,1.2.3.4\n"),
             WB: FakeResp(200, [["original"], ["https://x.com/app.js"]]),
         }
@@ -153,7 +157,7 @@ async def test_run_one_no_errors_on_success(tmp_path: Path, fake_http):
     cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["http", "secrets"])
     result = await run_one(cfg, no_html=True)
     assert result["errors"] == []
-    assert result["subdomains"] == ["a.x.com", "b.x.com", "c.x.com"]
+    assert result["subdomains"] == ["a.x.com", "b.x.com", "c.x.com", "d.x.com"]
     assert result["urls"] == ["https://x.com/app.js"]
     assert result["timestamp"]
 
@@ -266,6 +270,7 @@ async def test_probe_includes_target_domain(tmp_path: Path, fake_http, monkeypat
     fake_http(
         {
             CRT: FakeResp(200, [{"name_value": "a.x.com"}]),
+            CS: FakeResp(200, []),
             HT: FakeResp(200, "no records found"),
         }
     )
@@ -286,6 +291,7 @@ async def test_cli_no_http_skips_probe(tmp_path: Path, fake_http, monkeypatch):
     fake_http(
         {
             CRT: FakeResp(200, [{"name_value": "a.x.com"}]),
+            CS: FakeResp(200, []),
             HT: FakeResp(200, "no records found"),
         }
     )

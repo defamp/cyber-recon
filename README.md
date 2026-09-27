@@ -15,7 +15,7 @@ Single CLI that runs a coordinated recon sweep against a target domain, with
 
 | Module | What it finds | Active? |
 |---|---|---|
-| Subdomain enum | crt.sh (with retries) + HackerTarget passive aggregation | passive |
+| Subdomain enum | crt.sh (with retries) + CertSpotter + HackerTarget passive aggregation | passive |
 | HTTP probe | DNS resolve, status, server, title, tech fingerprint for the target and its subdomains | light touch¹ (`--no-http` to skip) |
 | CORS reflection | Sends random Origin header, detects arbitrary reflection | opt-in `--active` |
 | Wayback mining | Historical URLs from Wayback CDX (`--wayback-limit`, default 10000) | passive |
@@ -64,6 +64,18 @@ PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example
 # Limit nuclei to template tags (-tags) or template paths/IDs (-t)
 PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example \
   --nuclei --nuclei-tags cve,exposure --nuclei-templates http/cves/
+```
+
+### Subdomain sources and rate limits
+
+Subdomains come from three independent sources, so one being down or out of
+quota doesn't empty the result: crt.sh, SSLMate CertSpotter and HackerTarget.
+The free CertSpotter and HackerTarget tiers are rate-limited; a failing source
+is shown with a ⚠ and its reason. For a higher CertSpotter limit, set an API
+key:
+
+```bash
+export CERTSPOTTER_API_KEY=your-key
 ```
 
 ### Diff vs baseline scan
@@ -195,7 +207,7 @@ src/recon/
 ├── bundled_plugins/          # plugins shipped with the tool
 │   └── severity.py           # (tally severities — active by default)
 ├── modules/
-│   ├── subdomains.py         # crt.sh + HackerTarget
+│   ├── subdomains.py         # crt.sh + CertSpotter + HackerTarget
 │   ├── http_probe.py         # DNS + HTTP probe + tech fingerprint
 │   ├── cors.py               # Origin reflection test
 │   ├── wayback.py            # CDX endpoint discovery
