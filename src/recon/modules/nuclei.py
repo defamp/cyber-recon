@@ -111,5 +111,21 @@ async def run_nuclei(
     return findings
 
 
+def finding_name(finding: dict) -> str:
+    """Template name plus what distinguishes this hit from others of the same
+    template: nuclei emits one result per matcher (e.g. one per missing
+    security header), which otherwise look like identical duplicates."""
+    name = (finding.get("info") or {}).get("name") or finding.get("template-id") or ""
+    details = []
+    if finding.get("matcher-name"):
+        details.append(str(finding["matcher-name"]))
+    extracted = finding.get("extracted-results") or []
+    if extracted:
+        details.append(
+            ", ".join(str(x) for x in extracted[:3]) + ("…" if len(extracted) > 3 else "")
+        )
+    return f"{name} [{' | '.join(details)}]" if details else name
+
+
 def nuclei_available() -> bool:
     return NUCLEI_BIN is not None

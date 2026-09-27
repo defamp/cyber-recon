@@ -4,6 +4,8 @@ import html
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..modules.nuclei import finding_name
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -339,9 +341,11 @@ def _render_nuclei(findings: list[dict]) -> str:
         "<table><thead><tr><th>Severity</th><th>Template</th><th>Name</th><th>Matched at</th><th>Info</th></tr></thead><tbody>"
     ]
     for f in findings:
+        if f.get("_warning"):
+            continue
         sev = (f.get("info", {}).get("severity") or "info").lower()
         template = f.get("template-id", "")
-        name = f.get("info", {}).get("name", "")
+        name = finding_name(f)
         matched = f.get("matched-at", "")
         description = f.get("info", {}).get("description", "")[:200]
         searchable = f"{template} {name} {matched} {description}"

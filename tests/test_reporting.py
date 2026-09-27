@@ -153,3 +153,45 @@ def test_html_report_cors_reflective_issue(tmp_path: Path):
     write_html_report(res, out)
     content = out.read_text()
     assert "Reflects arbitrary Origin" in content
+
+
+def _nuclei_results():
+    return {
+        "target": "x.com",
+        "subdomains": [],
+        "alive": [],
+        "urls": [],
+        "secrets": [],
+        "nuclei": [
+            {"_warning": "nuclei timed out after 300s (partial results)"},
+            {
+                "template-id": "hdrs",
+                "info": {"name": "Missing Headers", "severity": "info"},
+                "matcher-name": "x-frame-options",
+                "matched-at": "https://x.com",
+            },
+            {
+                "template-id": "db-dump",
+                "info": {"name": "SQL Dump", "severity": "high"},
+                "matched-at": "https://x.com/db.sql",
+            },
+        ],
+    }
+
+
+def test_markdown_lists_nuclei_findings_by_severity(tmp_path):
+    from recon.reporting.markdown import write_markdown_report
+
+    out = tmp_path / "r.md"
+    write_markdown_report(_nuclei_results(), out)
+    md = out.read_text()
+    assert "## Nuclei findings (2)" in md
+    assert md.index("SQL Dump") < md.index("Missing Headers [x-frame-options]")
+
+
+def test_html_skips_warning_entries_among_findings(tmp_path):
+    from recon.reporting.html_report import _render_nuclei
+
+    html = _render_nuclei(_nuclei_results()["nuclei"])
+    assert html.count('class="nuclei-row"') == 2
+    assert "Missing Headers [x-frame-options]" in html

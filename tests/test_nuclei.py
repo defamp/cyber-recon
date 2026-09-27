@@ -133,3 +133,17 @@ def test_explicit_tags_are_not_severity_filtered(tmp_path, monkeypatch):
 def test_explicit_severity_still_applies_with_tags(tmp_path, monkeypatch):
     argv = _argv_of(tmp_path, monkeypatch, tags=["tech"], severity=["info"])
     assert argv[argv.index("-severity") + 1] == "info"
+
+
+def test_finding_name_distinguishes_matchers():
+    from recon.modules.nuclei import finding_name
+
+    base = {"template-id": "http-missing-security-headers", "info": {"name": "Missing Headers"}}
+    assert finding_name(base) == "Missing Headers"
+    assert (
+        finding_name({**base, "matcher-name": "x-frame-options"})
+        == "Missing Headers [x-frame-options]"
+    )
+    tls = {"info": {"name": "Weak Ciphers"}, "extracted-results": ["a", "b", "c", "d"]}
+    assert finding_name(tls) == "Weak Ciphers [a, b, c…]"
+    assert finding_name({"template-id": "t1"}) == "t1"

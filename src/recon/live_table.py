@@ -6,6 +6,8 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
+from .modules.nuclei import finding_name
+
 SEV_STYLE = {
     "critical": "bold white on red",
     "high": "bold white on dark_orange3",
@@ -34,7 +36,7 @@ def render_table(findings: list[dict]) -> Table:
         info = f.get("info") or {}
         sev = (info.get("severity") or "info").lower()
         template = f.get("template-id") or ""
-        name = info.get("name") or ""
+        name = finding_name(f)
         matched = f.get("matched-at") or ""
         desc = (info.get("description") or "")[:140]
         sev_cell = f"[{SEV_STYLE.get(sev, 'dim')}]{sev.upper():>8}[/]"

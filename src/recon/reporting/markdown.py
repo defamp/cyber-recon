@@ -3,6 +3,8 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..modules.nuclei import finding_name
+
 
 def write_markdown_report(results: dict, path: Path) -> None:
     target = results.get("target", "?")
@@ -52,6 +54,29 @@ def write_markdown_report(results: dict, path: Path) -> None:
     if urls:
         lines.append(f"_Showing first 50 of {len(urls)}_")
         lines.extend(f"- `{u}`" for u in urls[:50])
+    else:
+        lines.append("_none_")
+    lines.append("")
+
+    findings = [f for f in results.get("nuclei", []) or [] if not f.get("_warning")]
+    lines.append(f"## Nuclei findings ({len(findings)})\n")
+    if findings:
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        findings = sorted(
+            findings,
+            key=lambda f: order.get(((f.get("info") or {}).get("severity") or "info").lower(), 5),
+        )
+        lines.append("| Severity | Template | Name | Matched at |")
+        lines.append("|----------|----------|------|------------|")
+        for f in findings:
+            lines.append(
+                "| {sev} | {tid} | {name} | {at} |".format(
+                    sev=((f.get("info") or {}).get("severity") or "info").lower(),
+                    tid=f.get("template-id", ""),
+                    name=finding_name(f).replace("|", "\\|"),
+                    at=f.get("matched-at", ""),
+                )
+            )
     else:
         lines.append("_none_")
     lines.append("")
