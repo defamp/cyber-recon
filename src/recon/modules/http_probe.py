@@ -1,11 +1,11 @@
 """HTTP probing — fingerprint live hosts, headers, CORS, server tech."""
 
 import asyncio
+import socket
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 
 import aiohttp
-import dns.resolver  # type: ignore
 
 CONCURRENCY = 30
 TIMEOUT = 8
@@ -24,12 +24,29 @@ class HostInfo:
     technologies: list[str]
 
 
-def _resolve(host: str) -> list[str]:
+DNS_TIMEOUT = 5
+
+
+async def _resolve(host: str) -> tuple[list[str], str]:
+    """Resolve via the system resolver, the same one aiohttp, curl and the
+    browser use (so /etc/hosts, VPN and systemd-resolved setups behave the
+    same). Returns (addresses, failure reason)."""
+    loop = asyncio.get_running_loop()
     try:
-        answers = dns.resolver.resolve(host, "A", lifetime=5)
-        return [r.to_text() for r in answers]
-    except Exception:
-        return []
+        infos = await asyncio.wait_for(
+            loop.getaddrinfo(host, None, type=socket.SOCK_STREAM), timeout=DNS_TIMEOUT
+        )
+    except TimeoutError:
+        return [], f"DNS: timed out after {DNS_TIMEOUT}s"
+    except OSError as exc:
+        return [], f"DNS: {exc.strerror or exc}"
+    return sorted({info[4][0] for info in infos}), ""
+
+
+def _describe(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return f"timed out after {TIMEOUT}s"
+    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
 def _fingerprint_tech(headers: dict[str, str], body_excerpt: str) -> list[str]:
@@ -60,7 +77,10 @@ def _fingerprint_tech(headers: dict[str, str], body_excerpt: str) -> list[str]:
     return sorted(set(tech))
 
 
-async def _probe_one(session: aiohttp.ClientSession, host: str) -> HostInfo | None:
+async def _probe_one(
+    session: aiohttp.ClientSession, host: str, failures: dict[str, str]
+) -> HostInfo | None:
+    reasons: list[str] = []
     for scheme in PROBE_SCHEMES:
         url = f"{scheme}://{host}"
         try:
@@ -84,8 +104,10 @@ async def _probe_one(session: aiohttp.ClientSession, host: str) -> HostInfo | No
                     cors_acac=headers.get("Access-Control-Allow-Credentials", ""),
                     technologies=_fingerprint_tech(headers, excerpt),
                 )
-        except Exception:
+        except Exception as exc:
+            reasons.append(f"{scheme}: {_describe(exc)}")
             continue
+    failures[host] = "; ".join(reasons)
     return None
 
 
@@ -96,16 +118,22 @@ async def _extract_title(body: str) -> str:
     return m.group(1).strip()[:120] if m else ""
 
 
-async def probe_targets(hosts: Iterable[str]) -> list[dict]:
-    """DNS resolve + HTTP probe concurrently. Returns list of host dicts."""
+async def probe_targets(hosts: Iterable[str], failures: dict[str, str] | None = None) -> list[dict]:
+    """DNS resolve + HTTP probe concurrently. Returns list of host dicts.
+
+    Hosts that don't answer are recorded in ``failures`` (host -> reason).
+    """
+    if failures is None:
+        failures = {}
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def bounded(host: str) -> dict | None:
         async with sem:
-            # dnspython is blocking; run it off the event loop so probes stay concurrent
-            if not await asyncio.to_thread(_resolve, host):
+            addrs, reason = await _resolve(host)
+            if not addrs:
+                failures[host] = reason
                 return None
-            info = await _probe_one(session, host)
+            info = await _probe_one(session, host, failures)
             return asdict(info) if info else None
 
     headers = {"User-Agent": "cyber-recon/0.1 (+passive)"}

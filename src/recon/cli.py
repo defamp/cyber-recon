@@ -27,6 +27,7 @@ from .reporting.html_report import write_html_report
 from .reporting.markdown import write_markdown_report
 
 console = Console()
+MAX_PROBE_FAILURES_SHOWN = 5
 
 
 def parse_args() -> argparse.Namespace:
@@ -147,9 +148,25 @@ async def run_one(
         # Probe the target itself too: it is often the main site, and without it
         # a target with no discovered subdomains never reaches CORS/Nuclei.
         hosts = [target.lower()] + [h for h in results["subdomains"] if h != target.lower()]
+        failures: dict[str, str] = {}
         with console.status("[bold green]Probing live hosts..."):
-            results["alive"] = await probe_targets(hosts)
-        console.print(f"  [green]✓[/green] {len(results['alive'])}/{len(hosts)} live hosts")
+            results["alive"] = await probe_targets(hosts, failures)
+        results["probe_failures"] = failures
+        n_err = len(errors)
+        # Dead subdomains are normal; an unreachable target is worth flagging.
+        if hosts[0] in failures:
+            errors.append(f"http: {hosts[0]} unreachable ({failures[hosts[0]]})")
+        mark = "[green]✓[/green]" if len(errors) == n_err else "[yellow]⚠[/yellow]"
+        console.print(f"  {mark} {len(results['alive'])}/{len(hosts)} live hosts")
+        report_errors(n_err)
+        other = [(h, r) for h, r in failures.items() if h != hosts[0]]
+        for host, reason in sorted(other)[:MAX_PROBE_FAILURES_SHOWN]:
+            console.print(f"    [dim]· {host}: {reason}[/dim]")
+        if len(other) > MAX_PROBE_FAILURES_SHOWN:
+            console.print(
+                f"    [dim]· … {len(other) - MAX_PROBE_FAILURES_SHOWN} more "
+                "(see probe_failures in results.json)[/dim]"
+            )
 
     if "wayback" not in skip:
         n_err = len(errors)

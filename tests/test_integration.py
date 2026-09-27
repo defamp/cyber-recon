@@ -258,7 +258,7 @@ async def test_probe_includes_target_domain(tmp_path: Path, fake_http, monkeypat
 
     probed = []
 
-    async def fake_probe(hosts):
+    async def fake_probe(hosts, failures):
         probed.extend(hosts)
         return []
 
@@ -279,7 +279,7 @@ async def test_probe_includes_target_domain(tmp_path: Path, fake_http, monkeypat
 async def test_cli_no_http_skips_probe(tmp_path: Path, fake_http, monkeypatch):
     import recon.cli as cli
 
-    async def fail_probe(hosts):
+    async def fail_probe(hosts, failures):
         raise AssertionError("probe must not run with --no-http")
 
     monkeypatch.setattr(cli, "probe_targets", fail_probe)
@@ -300,3 +300,19 @@ async def test_cli_rejects_invalid_wayback_limit(tmp_path: Path):
     assert await run(_args(tmp_path, wayback_limit=0)) == 2
     # validated before batch mode too, without loading the batch file
     assert await run(_args(tmp_path, wayback_limit=0, batch="missing.yml")) == 2
+
+
+@pytest.mark.asyncio
+async def test_unreachable_target_is_reported(tmp_path: Path, monkeypatch):
+    import recon.cli as cli
+
+    async def fake_probe(hosts, failures):
+        failures.update({"x.com": "DNS: timed out after 5s", "a.x.com": "http: timed out"})
+        return []
+
+    monkeypatch.setattr(cli, "probe_targets", fake_probe)
+    cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["subdomains", "wayback"])
+    result = await run_one(cfg, no_html=True)
+    # only the target itself counts as an error; dead subdomains are listed, not errors
+    assert result["errors"] == ["http: x.com unreachable (DNS: timed out after 5s)"]
+    assert result["probe_failures"]["a.x.com"] == "http: timed out"
