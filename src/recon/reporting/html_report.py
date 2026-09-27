@@ -306,17 +306,22 @@ def _render_secrets(secrets: list[dict]) -> str:
     if not secrets:
         return '<p class="empty">No potential secrets detected in JS files.</p>'
     rows = [
-        "<table><thead><tr><th>Pattern</th><th>Source URL</th><th>Match</th><th></th></tr></thead><tbody>"
+        "<table><thead><tr><th>Confidence</th><th>Pattern</th><th>Source URL</th><th>Match</th><th></th></tr></thead><tbody>"
     ]
     for s in secrets:
         match = s.get("match") or ""
         url = s.get("url") or ""
         pattern = s.get("pattern") or ""
-        searchable = f"{pattern} {url} {match}"
+        conf = s.get("confidence") or ""
+        n = s.get("occurrences", 1)
+        more = f" <small>(+{n - 1} more)</small>" if n > 1 else ""
+        color = {"high": "var(--red)", "medium": "var(--orange)"}.get(conf, "var(--muted)")
+        searchable = f"{conf} {pattern} {url} {match}"
         rows.append(
             f'<tr class="secret-row" data-searchable="{_esc_attr(searchable)}">'
+            f'<td style="color:{color};font-weight:600">{html.escape(conf.upper())}</td>'
             f"<td>{html.escape(pattern)}</td>"
-            f'<td><a class="host-url" href="{html.escape(url)}" target="_blank">{html.escape(url[:80])}{"…" if len(url) > 80 else ""}</a></td>'
+            f'<td><a class="host-url" href="{html.escape(url)}" target="_blank">{html.escape(url[:80])}{"…" if len(url) > 80 else ""}</a>{more}</td>'
             f'<td><code class="secret-match">{html.escape(match[:100])}</code></td>'
             f'<td><button class="copy-btn" data-copy="{_esc_attr(match)}">copy</button></td></tr>'
         )

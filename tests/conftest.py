@@ -58,7 +58,8 @@ class FakeResp:
 class FakeSession:
     """Stand-in for aiohttp.ClientSession (respx only mocks httpx, not aiohttp).
 
-    ``routes`` maps a URL prefix to a FakeResp, or to an Exception to raise.
+    ``routes`` maps a URL prefix to a FakeResp, an Exception to raise, or a
+    list of those consumed one per request (the last one repeats).
     """
 
     def __init__(self, routes):
@@ -78,6 +79,8 @@ class FakeSession:
         self.urls.append(url)
         for prefix, resp in self.routes.items():
             if url.startswith(prefix):
+                if isinstance(resp, list):
+                    resp = resp.pop(0) if len(resp) > 1 else resp[0]
                 if isinstance(resp, Exception):
                     raise resp
                 return resp

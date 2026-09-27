@@ -33,32 +33,15 @@ def diff_results(baseline: dict, current: dict) -> dict[str, Any]:
     removed: dict[str, list] = {k: [] for k in keys}
     unchanged: dict[str, int] = {}
 
-    def _to_keys(items: list, kind: str) -> set:
-        """Extract a hashable identity key from each item."""
-        out: set = set()
-        for it in items:
-            if isinstance(it, dict):
-                key = it.get("url") or it.get("host")
-                if not key:
-                    if kind == "secrets":
-                        key = f"{it.get('pattern', '')}|{it.get('match', '')}"
-                    else:
-                        key = repr(sorted(it.items()))
-                out.add(key)
-            else:
-                out.add(str(it))
-        return out
-
     def _to_map(items: list, kind: str) -> dict:
         out: dict = {}
         for it in items:
             if isinstance(it, dict):
-                key = it.get("url") or it.get("host")
-                if not key:
-                    if kind == "secrets":
-                        key = f"{it.get('pattern', '')}|{it.get('match', '')}"
-                    else:
-                        key = repr(sorted(it.items()))
+                if kind == "secrets":
+                    # A secret is the same finding whichever JS file it was seen in
+                    key = f"{it.get('pattern', '')}|{it.get('match', '')}"
+                else:
+                    key = it.get("url") or it.get("host") or repr(sorted(it.items()))
                 out[key] = it
             else:
                 out[str(it)] = it

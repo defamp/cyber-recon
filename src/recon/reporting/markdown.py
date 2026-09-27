@@ -59,14 +59,17 @@ def write_markdown_report(results: dict, path: Path) -> None:
     secrets = results.get("secrets", [])
     lines.append(f"## Potential secrets ({len(secrets)})\n")
     if secrets:
-        lines.append("| Source | Pattern | Match |")
-        lines.append("|--------|---------|-------|")
+        lines.append("| Confidence | Pattern | Match | Seen in |")
+        lines.append("|------------|---------|-------|---------|")
         for s in secrets:
+            n = s.get("occurrences", 1)
+            seen = s.get("url", "") + (f" (+{n - 1} more)" if n > 1 else "")
             lines.append(
-                "| {url} | {pat} | `{m}` |".format(
-                    url=s.get("url", ""),
+                "| {conf} | {pat} | `{m}` | {seen} |".format(
+                    conf=s.get("confidence", ""),
                     pat=s.get("pattern", ""),
-                    m=(s.get("match") or "")[:80],
+                    m=(s.get("match") or "")[:80].replace("|", "\\|"),
+                    seen=seen,
                 )
             )
     else:

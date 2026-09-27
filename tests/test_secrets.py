@@ -72,3 +72,39 @@ def test_all_patterns_are_strings():
         assert isinstance(name, str)
         assert isinstance(pat, str)
         assert len(pat) > 0
+
+
+def test_filter_js_urls_dedupes_query_and_scheme_variants():
+    urls = [
+        "http://x.com/app.js?v=1",
+        "https://x.com/app.js?v=2",
+        "http://x.com:80/app.js",
+        "https://x.com/other.js",
+    ]
+    assert _filter_js_urls(urls) == ["http://x.com/app.js?v=1", "https://x.com/other.js"]
+
+
+def test_group_findings_merges_and_ranks_by_confidence():
+    from recon.modules.secrets import Finding, _group_findings
+
+    findings = [
+        Finding("https://x.com/a.js", "generic_api_key", 'apikey="abcdefghijklmnop"'),
+        Finding("https://x.com/b.js", "generic_api_key", 'apikey="abcdefghijklmnop"'),
+        Finding("https://x.com/c.js", "aws_access_key", "AKIAIOSFODNN7EXAMPLE"),
+        Finding("https://x.com/a.js", "generic_api_key", 'apikey="abcdefghijklmnop"'),
+    ]
+    out = _group_findings(findings)
+    assert [(f["pattern"], f["confidence"]) for f in out] == [
+        ("aws_access_key", "high"),
+        ("generic_api_key", "low"),
+    ]
+    generic = out[1]
+    assert generic["occurrences"] == 3
+    assert generic["urls"] == ["https://x.com/a.js", "https://x.com/b.js"]
+    assert generic["url"] == "https://x.com/a.js"
+
+
+def test_every_pattern_has_a_confidence():
+    from recon.modules.secrets import CONFIDENCE
+
+    assert set(CONFIDENCE) == set(PATTERNS)

@@ -10,6 +10,7 @@ from conftest import FakeResp
 
 from recon.batch import TargetConfig
 from recon.cli import run, run_one
+from recon.modules import subdomains
 
 
 def _cfg(target="example.com", output=None, **kw) -> TargetConfig:
@@ -118,7 +119,8 @@ WB = "https://web.archive.org/"
 
 
 @pytest.mark.asyncio
-async def test_run_one_records_source_errors(tmp_path: Path, fake_http):
+async def test_run_one_records_source_errors(tmp_path: Path, fake_http, monkeypatch):
+    monkeypatch.setattr(subdomains, "RETRY_BACKOFF", 0)
     fake_http(
         {
             CRT: FakeResp(502),
@@ -129,13 +131,13 @@ async def test_run_one_records_source_errors(tmp_path: Path, fake_http):
     cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["http", "secrets"])
     result = await run_one(cfg, no_html=False)
     assert result["errors"] == [
-        "crt.sh: http 502",
+        "crt.sh: http 502 (after 3 attempts)",
         "hackertarget: API count exceeded - Increase Quota with Membership",
         "wayback: ClientConnectionError: connection refused",
     ]
     saved = json.loads((tmp_path / "x" / "results.json").read_text())
     assert saved["errors"] == result["errors"]
-    assert "crt.sh: http 502" in (tmp_path / "x" / "report.md").read_text()
+    assert "crt.sh: http 502 (after 3 attempts)" in (tmp_path / "x" / "report.md").read_text()
     assert "source error(s)" in (tmp_path / "x" / "report.html").read_text()
 
 
@@ -174,6 +176,8 @@ def _args(tmp_path: Path, **kw) -> argparse.Namespace:
         no_subdomains=True,
         no_wayback=True,
         no_secrets=True,
+        no_http=True,
+        wayback_limit=10000,
         no_html=True,
         no_plugins=True,
     )
@@ -218,7 +222,9 @@ async def test_named_plugin_runs_in_addition_to_defaults(tmp_path: Path):
 
     register("extra_test_plugin", extra)
     try:
-        cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["subdomains", "wayback"])
+        cfg = _cfg(
+            target="x.com", output=str(tmp_path / "x"), skip=["subdomains", "wayback", "http"]
+        )
         result = await run_one(cfg, no_html=True, plugin_names=["extra_test_plugin"])
     finally:
         unregister("extra_test_plugin")
@@ -229,16 +235,68 @@ async def test_named_plugin_runs_in_addition_to_defaults(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_unknown_plugin_is_reported(tmp_path: Path):
-    cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["subdomains", "wayback"])
+    cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["subdomains", "wayback", "http"])
     result = await run_one(cfg, no_html=True, plugin_names=["does_not_exist"])
     assert result["errors"] == ["plugin: unknown plugin 'does_not_exist' (see --list-plugins)"]
 
 
 @pytest.mark.asyncio
 async def test_html_header_reflects_scan_mode(tmp_path: Path):
-    skip = ["subdomains", "wayback"]
+    skip = ["subdomains", "wayback", "http"]
     await run_one(_cfg(target="x.com", output=str(tmp_path / "p"), skip=skip), no_html=False)
     cfg = _cfg(target="x.com", output=str(tmp_path / "a"), skip=skip, active=True)
     await run_one(cfg, no_html=False)
     assert "passive only" in (tmp_path / "p" / "report.html").read_text()
     assert "active modules enabled" in (tmp_path / "a" / "report.html").read_text()
+
+
+@pytest.mark.asyncio
+async def test_probe_includes_target_domain(tmp_path: Path, fake_http, monkeypatch):
+    """The target itself is probed, so a target without subdomains still
+    reaches CORS/Nuclei."""
+    import recon.cli as cli
+
+    probed = []
+
+    async def fake_probe(hosts):
+        probed.extend(hosts)
+        return []
+
+    monkeypatch.setattr(cli, "probe_targets", fake_probe)
+    fake_http(
+        {
+            CRT: FakeResp(200, [{"name_value": "a.x.com"}]),
+            HT: FakeResp(200, "no records found"),
+        }
+    )
+    cfg = _cfg(target="X.com", output=str(tmp_path / "x"), skip=["wayback", "secrets"])
+    result = await run_one(cfg, no_html=True)
+    assert probed == ["x.com", "a.x.com"]
+    assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_cli_no_http_skips_probe(tmp_path: Path, fake_http, monkeypatch):
+    import recon.cli as cli
+
+    async def fail_probe(hosts):
+        raise AssertionError("probe must not run with --no-http")
+
+    monkeypatch.setattr(cli, "probe_targets", fail_probe)
+    fake_http(
+        {
+            CRT: FakeResp(200, [{"name_value": "a.x.com"}]),
+            HT: FakeResp(200, "no records found"),
+        }
+    )
+    assert await run(_args(tmp_path, no_http=True, no_subdomains=False)) == 0
+    saved = json.loads((tmp_path / "x" / "results.json").read_text())
+    assert saved["subdomains"] == ["a.x.com"]
+    assert saved["alive"] == []
+
+
+@pytest.mark.asyncio
+async def test_cli_rejects_invalid_wayback_limit(tmp_path: Path):
+    assert await run(_args(tmp_path, wayback_limit=0)) == 2
+    # validated before batch mode too, without loading the batch file
+    assert await run(_args(tmp_path, wayback_limit=0, batch="missing.yml")) == 2

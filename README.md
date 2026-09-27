@@ -15,14 +15,18 @@ Single CLI that runs a coordinated recon sweep against a target domain, with
 
 | Module | What it finds | Active? |
 |---|---|---|
-| Subdomain enum | crt.sh + HackerTarget passive aggregation | passive |
-| HTTP probe | DNS resolve, status, server, title, tech fingerprint | passive |
+| Subdomain enum | crt.sh (with retries) + HackerTarget passive aggregation | passive |
+| HTTP probe | DNS resolve, status, server, title, tech fingerprint for the target and its subdomains | light touch¹ (`--no-http` to skip) |
 | CORS reflection | Sends random Origin header, detects arbitrary reflection | opt-in `--active` |
-| Wayback mining | Historical URLs from Wayback CDX | passive |
-| Secret scanner | Regex: AWS, GitHub, Slack, Google, Stripe, JWT, generic API keys in JS files | passive |
+| Wayback mining | Historical URLs from Wayback CDX (`--wayback-limit`, default 10000) | passive |
+| Secret scanner | Regex: AWS, GitHub, Slack, Google, Stripe, JWT, generic API keys in JS files; deduplicated and ranked high/medium/low confidence | light touch¹ (`--no-secrets` to skip) |
 | Nuclei integration | Runs nuclei binary, parses JSON output | opt-in `--nuclei` |
 | CVE enrichment | Looks up CVE-tagged Nuclei findings against GitHub Advisory DB | opt-in `--enrich-cve` |
 | Plugins | Auto-loaded bundled + user-supplied transformers | optional |
+
+¹ Sends ordinary GET requests to the target's own servers. Everything else in
+the default run only queries third-party sources. For a run that sends nothing
+to the target, use `--no-http --no-secrets`.
 
 ## Install
 
@@ -38,10 +42,17 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Single target — passive
+### Single target — default run
 
 ```bash
 PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example
+```
+
+### Single target — third-party sources only (nothing sent to the target)
+
+```bash
+PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example \
+  --no-http --no-secrets
 ```
 
 ### Single target — full active scan
