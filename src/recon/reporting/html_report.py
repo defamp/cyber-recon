@@ -92,7 +92,7 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
   </div>
   <input type="search" id="globalSearch" class="search-input" placeholder="Search report (URL, host, secret, finding)…">
 </header>
-
+{errors_html}
 <section class="summary">
   <div class="stat" data-jump="live-hosts"><div class="stat-num">{n_alive}</div><div class="stat-label">Live hosts</div></div>
   <div class="stat" data-jump="subdomains"><div class="stat-num">{n_subs}</div><div class="stat-label">Subdomains</div></div>
@@ -227,11 +227,17 @@ def _render_subs(subs: list[str]) -> str:
     return '<div class="card">' + "".join(items) + "</div>"
 
 
-def _render_cors(hosts: list[dict], reflective: dict[str, dict]) -> str:
+def _cors_issues(hosts: list[dict], reflective: dict[str, dict]) -> list[tuple]:
     issues = []
     for h in hosts:
         acao = (h.get("cors_acao") or "").strip()
         acac = (h.get("cors_acac") or "").strip().lower()
+        active = reflective.get(h.get("host", ""), {})
+        if active.get("reflects"):
+            # The passive probe sends no Origin, so reflection only shows up in
+            # the active probe's response headers.
+            acao = (active.get("acao") or acao).strip()
+            acac = (active.get("acac") or acac).strip().lower()
         if not acao:
             continue
         severity = "ok"
@@ -257,6 +263,11 @@ def _render_cors(hosts: list[dict], reflective: dict[str, dict]) -> str:
             issues.append(
                 (severity, h.get("host", ""), h.get("url", ""), acao, acac, " ".join(notes))
             )
+    return issues
+
+
+def _render_cors(hosts: list[dict], reflective: dict[str, dict]) -> str:
+    issues = _cors_issues(hosts, reflective)
     if not issues:
         return '<p class="empty">No obvious CORS misconfigurations detected.</p>'
     rows = [
@@ -341,6 +352,19 @@ def _render_nuclei(findings: list[dict]) -> str:
     return "\n".join(rows)
 
 
+def _render_errors(errors: list[str]) -> str:
+    if not errors:
+        return ""
+    items = "".join(f"<li>{html.escape(str(e))}</li>" for e in errors)
+    return (
+        '<section class="errors" style="border:1px solid var(--red);border-radius:8px;'
+        'padding:8px 16px;margin:16px 0">'
+        f'<strong style="color:var(--red)">&#9888; {len(errors)} source error(s)</strong> '
+        "&mdash; counts below may be incomplete."
+        f"<ul>{items}</ul></section>"
+    )
+
+
 def write_html_report(results: dict, path: Path) -> None:
     target = results.get("target", "?")
     timestamp = datetime.now(UTC).isoformat(timespec="seconds")
@@ -351,14 +375,7 @@ def write_html_report(results: dict, path: Path) -> None:
     nuclei = results.get("nuclei", [])
     reflective = results.get("cors_reflective", {})
 
-    # CORS issue count
-    n_cors = 0
-    for h in hosts:
-        acao = (h.get("cors_acao") or "").strip()
-        if not acao:
-            continue
-        if acao in ("*", "null") or reflective.get(h.get("host", ""), {}).get("reflects"):
-            n_cors += 1
+    n_cors = len(_cors_issues(hosts, reflective))
 
     n_secrets = len(secrets)
     n_nuclei = len([f for f in nuclei if not f.get("_warning")])
@@ -395,5 +412,6 @@ def write_html_report(results: dict, path: Path) -> None:
         urls_html=_render_urls(urls),
         secrets_html=_render_secrets(secrets),
         nuclei_html=_render_nuclei(nuclei),
+        errors_html=_render_errors(results.get("errors") or []),
     )
     path.write_text(html_out)

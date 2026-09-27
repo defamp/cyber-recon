@@ -8,7 +8,7 @@ import asyncio
 import json
 import shutil
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 NUCLEI_BIN = shutil.which("nuclei")
@@ -21,11 +21,13 @@ async def run_nuclei(
     severity: list[str] | None = None,
     templates: list[str] | None = None,
     timeout: int = 300,
+    on_finding: Callable[[dict], None] | None = None,
 ) -> list[dict]:
     """Run nuclei against live hosts. Returns parsed JSON findings.
 
     Each finding dict has: template-id, name, severity, host, matched-at,
-    info, etc. Empty list if nuclei is not installed.
+    info, etc. Empty list if nuclei is not installed. ``on_finding`` is called
+    for each finding as soon as nuclei emits it (used by the live table).
     """
     urls = [h["url"] for h in hosts if h.get("url")]
     if not urls:
@@ -39,15 +41,17 @@ async def run_nuclei(
             f.write(u + "\n")
         targets_path = f.name
 
+    # Flags per nuclei v3 (`-json`/`-no-update-check` were removed and make nuclei exit 2)
     cmd = [
         NUCLEI_BIN,
         "-l",
         targets_path,
-        "-json",
+        "-jsonl",
         "-severity",
         ",".join(sev),
         "-silent",
-        "-no-update-check",
+        "-no-color",
+        "-disable-update-check",
         "-timeout",
         "5",
         "-retries",
@@ -56,27 +60,47 @@ async def run_nuclei(
     if templates:
         cmd.extend(["-t", ",".join(templates)])
 
+    findings: list[dict] = []
+
+    async def _read_stdout(stream: asyncio.StreamReader) -> None:
+        while line := await stream.readline():
+            text = line.decode(errors="ignore").strip()
+            if not text:
+                continue
+            try:
+                finding = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            findings.append(finding)
+            if on_finding:
+                on_finding(finding)
+
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except (TimeoutError, FileNotFoundError, PermissionError) as exc:
+        assert proc.stdout is not None and proc.stderr is not None
+        stderr_task = asyncio.ensure_future(proc.stderr.read())
+        await asyncio.wait_for(_read_stdout(proc.stdout), timeout=timeout)
+        stderr = await stderr_task
+        returncode = await proc.wait()
+    except TimeoutError:
+        if proc and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        return findings + [{"_warning": f"nuclei timed out after {timeout}s (partial results)"}]
+    except (FileNotFoundError, PermissionError) as exc:
         return [{"_warning": f"nuclei execution failed: {exc}"}]
     finally:
         Path(targets_path).unlink(missing_ok=True)
 
-    findings: list[dict] = []
-    for line in stdout.decode(errors="ignore").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            findings.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+    if returncode != 0:
+        detail = stderr.decode(errors="ignore").strip().splitlines()
+        msg = detail[-1] if detail else "no output"
+        findings.append({"_warning": f"nuclei exited with code {returncode}: {msg[:200]}"})
     return findings
 
 

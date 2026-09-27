@@ -1,6 +1,7 @@
 import asyncio
 
-from recon.modules import advisories
+from conftest import FakeResp
+
 from recon.modules.advisories import _extract_cves, enrich_nuclei
 
 
@@ -46,43 +47,7 @@ def test_enrich_nuclei_no_cve_passthrough():
     assert out == findings  # unchanged
 
 
-class _FakeResp:
-    def __init__(self, status, body):
-        self.status = status
-        self._body = body
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
-    async def json(self, content_type=None):
-        return self._body
-
-
-class _FakeSession:
-    """Stand-in for aiohttp.ClientSession (respx only mocks httpx, not aiohttp)."""
-
-    def __init__(self, status, body):
-        self._resp = _FakeResp(status, body)
-        self.urls: list[str] = []
-
-    def __call__(self, *a, **kw):
-        return self
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
-    def get(self, url, **kw):
-        self.urls.append(url)
-        return self._resp
-
-
-def test_enrich_nuclei_attaches_advisory(monkeypatch):
+def test_enrich_nuclei_attaches_advisory(fake_http):
     payload = [
         {
             "ghsa_id": "GHSA-jfh8-c2jp-5v3q",
@@ -93,8 +58,7 @@ def test_enrich_nuclei_attaches_advisory(monkeypatch):
             "html_url": "https://github.com/advisories/GHSA-jfh8-c2jp-5v3q",
         }
     ]
-    fake = _FakeSession(200, payload)
-    monkeypatch.setattr(advisories.aiohttp, "ClientSession", fake)
+    fake = fake_http({"https://api.github.com/advisories": FakeResp(200, payload)})
     findings = [{"template-id": "CVE-2021-44228", "info": {"severity": "critical"}}]
     out = asyncio.run(enrich_nuclei(findings))
     assert fake.urls == ["https://api.github.com/advisories?cve_id=CVE-2021-44228"]
@@ -105,15 +69,15 @@ def test_enrich_nuclei_attaches_advisory(monkeypatch):
     assert adv["cvss"] == 10.0
 
 
-def test_enrich_nuclei_404_handled(monkeypatch):
-    monkeypatch.setattr(advisories.aiohttp, "ClientSession", _FakeSession(404, None))
+def test_enrich_nuclei_404_handled(fake_http):
+    fake_http({"https://api.github.com/advisories": FakeResp(404)})
     findings = [{"template-id": "CVE-9999-99999", "info": {}}]
     out = asyncio.run(enrich_nuclei(findings))
     assert out == findings  # unchanged when 404
 
 
-def test_enrich_nuclei_non_200_records_error(monkeypatch):
-    monkeypatch.setattr(advisories.aiohttp, "ClientSession", _FakeSession(403, None))
+def test_enrich_nuclei_non_200_records_error(fake_http):
+    fake_http({"https://api.github.com/advisories": FakeResp(403)})
     findings = [{"template-id": "CVE-2021-44228", "info": {}}]
     out = asyncio.run(enrich_nuclei(findings))
     assert out[0]["gh_advisory"] == [{"cve": "CVE-2021-44228", "_error": "http 403"}]

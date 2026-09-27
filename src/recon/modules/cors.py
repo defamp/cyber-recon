@@ -28,8 +28,8 @@ def _rand_origin() -> str:
 
 async def _test_origin(
     session: aiohttp.ClientSession, url: str, origin: str
-) -> tuple[str, str, bool]:
-    """Returns (origin, acao_header, reflects_origin)."""
+) -> tuple[str, str, str, bool]:
+    """Returns (origin, acao_header, acac_header, reflects_origin)."""
     try:
         async with session.get(
             url,
@@ -38,16 +38,18 @@ async def _test_origin(
             allow_redirects=False,
         ) as r:
             acao = r.headers.get("Access-Control-Allow-Origin", "")
-            reflects = acao == origin or acao == "*"
-            return (origin, acao, reflects)
+            acac = r.headers.get("Access-Control-Allow-Credentials", "")
+            # A wildcard is not reflection; it is reported separately from the ACAO value.
+            reflects = acao == origin
+            return (origin, acao, acac, reflects)
     except Exception:
-        return (origin, "", False)
+        return (origin, "", "", False)
 
 
 async def check_cors_reflection(hosts: list[dict]) -> dict[str, dict]:
     """For each live host, test if it reflects arbitrary Origin.
 
-    Returns: {host: {"reflects": bool, "acao": str, "tested_origin": str}}
+    Returns: {host: {"reflects": bool, "acao": str, "acac": str, "tested_origin": str}}
     """
     if not hosts:
         return {}
@@ -57,13 +59,19 @@ async def check_cors_reflection(hosts: list[dict]) -> dict[str, dict]:
     async def bounded(h: dict) -> tuple[str, dict]:
         url = h.get("url")
         if not url:
-            return h.get("host", ""), {"reflects": False, "acao": "", "tested_origin": ""}
+            return h.get("host", ""), {
+                "reflects": False,
+                "acao": "",
+                "acac": "",
+                "tested_origin": "",
+            }
         origin = _rand_origin()
         async with sem:
-            tested, acao, reflects = await _test_origin(session, url, origin)
+            tested, acao, acac, reflects = await _test_origin(session, url, origin)
         return h.get("host", ""), {
             "reflects": reflects,
             "acao": acao,
+            "acac": acac,
             "tested_origin": tested,
         }
 
