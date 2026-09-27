@@ -36,7 +36,11 @@ async def run_nuclei(
     if NUCLEI_BIN is None:
         return [{"_warning": "nuclei binary not found in PATH — skipping"}]
 
-    sev = severity or SEVERITIES
+    # Default to critical/high/medium for a broad scan. When the caller picked
+    # templates or tags explicitly, don't filter: e.g. every `tech` template is
+    # severity info, so the default filter would silently drop all of them.
+    if severity is None and not (templates or tags):
+        severity = SEVERITIES
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         for u in urls:
             f.write(u + "\n")
@@ -48,8 +52,6 @@ async def run_nuclei(
         "-l",
         targets_path,
         "-jsonl",
-        "-severity",
-        ",".join(sev),
         "-silent",
         "-no-color",
         "-disable-update-check",
@@ -58,6 +60,8 @@ async def run_nuclei(
         "-retries",
         "1",
     ]
+    if severity:
+        cmd.extend(["-severity", ",".join(severity)])
     if templates:
         cmd.extend(["-t", ",".join(templates)])
     if tags:

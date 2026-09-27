@@ -223,7 +223,8 @@ async def run_one(
             else:
                 results["nuclei"] = raw_nuclei
             real = [f for f in results["nuclei"] if not f.get("_warning")]
-            console.print(f"  [yellow]⚠[/yellow] {len(real)} Nuclei findings")
+            mark = "[yellow]⚠[/yellow]" if real else "[green]✓[/green]"
+            console.print(f"  {mark} {len(real)} Nuclei findings")
             n_err = len(errors)
             errors.extend(
                 f"nuclei: {f['_warning']}" for f in results["nuclei"] if f.get("_warning")

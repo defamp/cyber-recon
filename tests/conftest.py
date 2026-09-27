@@ -1,5 +1,7 @@
 """Shared fixtures."""
 
+import json
+
 import aiohttp
 import pytest
 
@@ -52,7 +54,9 @@ class FakeResp:
         return self._body
 
     async def text(self, errors=None):
-        return self._body if isinstance(self._body, str) else ""
+        if isinstance(self._body, str):
+            return self._body
+        return "" if self._body is None else json.dumps(self._body)
 
 
 class FakeSession:

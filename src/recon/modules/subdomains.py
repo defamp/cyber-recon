@@ -1,12 +1,15 @@
 """Subdomain enumeration — passive only."""
 
 import asyncio
+import json
 import re
 from collections.abc import Iterable
 
 import aiohttp
 
-CRT_SH_URL = "https://crt.sh/?q=%25{domain}&output=json"
+# %25 is "%", so q=%.example.com: subdomains only (the dot keeps it from
+# also matching e.g. notexample.com, and makes the query cheaper for crt.sh)
+CRT_SH_URL = "https://crt.sh/?q=%25.{domain}&output=json"
 HACKERTARGET_URL = "https://api.hackertarget.com/hostsearch/?q={domain}"
 
 
@@ -18,6 +21,13 @@ def _extract_unique(domain: str, hosts: Iterable[str]) -> list[str]:
         if h.endswith(suffix) and h not in seen and "*" not in h:
             seen.add(h)
     return sorted(seen)
+
+
+def _snippet(body: str, limit: int = 80) -> str:
+    """First bit of a non-JSON response (usually an HTML error page), tags
+    stripped, so the report shows what the source actually said."""
+    text = re.sub(r"<[^>]+>", " ", body)
+    return " ".join(text.split())[:limit]
 
 
 def _describe(exc: Exception) -> str:
@@ -35,6 +45,7 @@ async def _fetch_crtsh(session: aiohttp.ClientSession, domain: str, errors: list
     for attempt in range(CRT_SH_ATTEMPTS):
         if attempt:
             await asyncio.sleep(RETRY_BACKOFF * 2 ** (attempt - 1))
+        body = ""
         try:
             async with session.get(
                 CRT_SH_URL.format(domain=domain), timeout=aiohttp.ClientTimeout(total=30)
@@ -42,9 +53,10 @@ async def _fetch_crtsh(session: aiohttp.ClientSession, domain: str, errors: list
                 if r.status != 200:
                     last_error = f"http {r.status}"
                     continue
-                data = await r.json(content_type=None)
+                body = await r.text()
+            data = json.loads(body)
         except ValueError:
-            last_error = "response was not JSON (crt.sh is likely overloaded)"
+            last_error = f"response was not JSON: {_snippet(body)!r}"
             continue
         except Exception as exc:
             last_error = _describe(exc)
