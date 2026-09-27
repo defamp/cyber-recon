@@ -1,11 +1,12 @@
 """Markdown report writer."""
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
 from pathlib import Path
 
 
 def write_markdown_report(results: dict, path: Path) -> None:
     target = results.get("target", "?")
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
 
     lines: list[str] = []
     lines.append(f"# Recon Report — `{target}`\n")

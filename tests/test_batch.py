@@ -13,14 +13,16 @@ def test_target_config_minimal():
 
 
 def test_target_config_full():
-    cfg = TargetConfig.from_dict({
-        "domain": "foo.com",
-        "output": "out/foo",
-        "active": True,
-        "nuclei": True,
-        "skip": ["wayback"],
-        "notify": {"webhook": "https://hooks.example/abc"},
-    })
+    cfg = TargetConfig.from_dict(
+        {
+            "domain": "foo.com",
+            "output": "out/foo",
+            "active": True,
+            "nuclei": True,
+            "skip": ["wayback"],
+            "notify": {"webhook": "https://hooks.example/abc"},
+        }
+    )
     assert cfg.output == "out/foo"
     assert cfg.active is True
     assert cfg.nuclei is True

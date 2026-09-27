@@ -1,4 +1,5 @@
 """CLI entry point."""
+
 import argparse
 import asyncio
 import json
@@ -7,16 +8,20 @@ from pathlib import Path
 
 from rich.console import Console
 
-from .modules.subdomains import enumerate_subdomains
-from .modules.http_probe import probe_targets
-from .modules.wayback import fetch_wayback_urls
-from .modules.secrets import scan_secrets
+from .batch import TargetConfig, load_batch
+from .diff import diff_results
+from .modules.advisories import enrich_nuclei
 from .modules.cors import check_cors_reflection
-from .modules.nuclei import run_nuclei, nuclei_available
-from .batch import load_batch, TargetConfig
+from .modules.http_probe import probe_targets
+from .modules.nuclei import nuclei_available, run_nuclei
+from .modules.secrets import scan_secrets
+from .modules.subdomains import enumerate_subdomains
+from .modules.wayback import fetch_wayback_urls
 from .notify import notify_webhook, parse_webhook_target
-from .reporting.markdown import write_markdown_report
+from .plugins import discover as discover_user_plugins
+from .plugins import list_plugins, run_plugins
 from .reporting.html_report import write_html_report
+from .reporting.markdown import write_markdown_report
 
 console = Console()
 
@@ -29,23 +34,59 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target", help="Root domain (single-target mode)")
     p.add_argument("--output", help="Output directory (single-target mode)")
     p.add_argument("--batch", help="YAML file with multiple targets (batch mode)")
-    p.add_argument("--active", action="store_true",
-                   help="Enable active modules (CORS reflection probe, Nuclei)")
-    p.add_argument("--nuclei", action="store_true",
-                   help="Run Nuclei scan on live hosts (requires nuclei binary)")
+    p.add_argument(
+        "--active",
+        action="store_true",
+        help="Enable active modules (CORS reflection probe, Nuclei)",
+    )
+    p.add_argument(
+        "--nuclei",
+        action="store_true",
+        help="Run Nuclei scan on live hosts (requires nuclei binary)",
+    )
     p.add_argument("--nuclei-templates", help="Comma-separated nuclei template tags/paths")
+    p.add_argument(
+        "--nuclei-live", action="store_true", help="Stream Nuclei findings into a live rich table"
+    )
+    p.add_argument(
+        "--enrich-cve",
+        action="store_true",
+        help="Enrich CVE-tagged Nuclei findings with GitHub advisory data",
+    )
+    p.add_argument("--diff", help="Path to baseline results.json — emit delta report")
+    p.add_argument(
+        "--plugin",
+        action="append",
+        default=[],
+        help="Run a named plugin (repeatable). e.g. --plugin severity_counter",
+    )
+    p.add_argument("--list-plugins", action="store_true", help="List registered plugins and exit")
     p.add_argument("--webhook", help="Webhook URL for notifications (slack:URL or discord:URL)")
     p.add_argument("--no-subdomains", action="store_true")
     p.add_argument("--no-wayback", action="store_true")
     p.add_argument("--no-secrets", action="store_true")
-    p.add_argument("--no-html", action="store_true",
-                   help="Skip HTML report (still emits Markdown + JSON)")
+    p.add_argument(
+        "--no-html", action="store_true", help="Skip HTML report (still emits Markdown + JSON)"
+    )
+    p.add_argument(
+        "--no-plugins", action="store_true", help="Skip auto-running active_default bundled plugins"
+    )
     return p.parse_args()
 
 
-async def run_one(cfg: TargetConfig, *, no_html: bool, extra_active: bool = False,
-                  extra_nuclei: bool = False, nuclei_templates: list[str] | None = None,
-                  webhook: str | None = None) -> dict:
+async def run_one(
+    cfg: TargetConfig,
+    *,
+    no_html: bool,
+    extra_active: bool = False,
+    extra_nuclei: bool = False,
+    nuclei_templates: list[str] | None = None,
+    webhook: str | None = None,
+    nuclei_live: bool = False,
+    enrich_cve: bool = False,
+    plugin_names: list[str] | None = None,
+    run_default_plugins: bool = True,
+) -> dict:
     target = cfg.domain
     out_dir = Path(cfg.output)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +132,9 @@ async def run_one(cfg: TargetConfig, *, no_html: bool, extra_active: bool = Fals
         with console.status("[bold yellow]Testing CORS reflection (active)..."):
             results["cors_reflective"] = await check_cors_reflection(results["alive"])
         n_reflect = sum(1 for v in results["cors_reflective"].values() if v.get("reflects"))
-        console.print(f"  [yellow]⚠[/yellow] {n_reflect}/{len(results['alive'])} hosts reflect Origin")
+        console.print(
+            f"  [yellow]⚠[/yellow] {n_reflect}/{len(results['alive'])} hosts reflect Origin"
+        )
 
     if nuclei and results["alive"]:
         if not nuclei_available():
@@ -99,12 +142,33 @@ async def run_one(cfg: TargetConfig, *, no_html: bool, extra_active: bool = Fals
             results["nuclei"] = [{"_warning": "nuclei binary not found in PATH"}]
         else:
             with console.status("[bold yellow]Running Nuclei scan (active)..."):
-                results["nuclei"] = await run_nuclei(
+                raw_nuclei = await run_nuclei(
                     results["alive"],
                     templates=nuclei_templates,
                 )
+            if enrich_cve:
+                with console.status("[bold cyan]Enriching CVEs via GitHub advisories..."):
+                    results["nuclei"] = await enrich_nuclei(raw_nuclei)
+                console.print("  [cyan]✓[/cyan] CVE enrichment done")
+            else:
+                results["nuclei"] = raw_nuclei
             real = [f for f in results["nuclei"] if not f.get("_warning")]
             console.print(f"  [yellow]⚠[/yellow] {len(real)} Nuclei findings")
+
+    # Plugins (bundled + user-requested)
+    if run_default_plugins or plugin_names:
+        names = list(plugin_names or [])
+        if run_default_plugins and not names:
+            await run_plugins(results)
+        elif names:
+            await run_plugins(results, names)
+        if "severity_summary" in results:
+            sev = results["severity_summary"]
+            console.print(
+                f"  [cyan]i[/cyan] severities: "
+                f"crit={sev.get('critical', 0)} high={sev.get('high', 0)} "
+                f"med={sev.get('medium', 0)} low={sev.get('low', 0)} info={sev.get('info', 0)}"
+            )
 
     # Write artifacts
     json_path = out_dir / "results.json"
@@ -126,13 +190,23 @@ async def run_one(cfg: TargetConfig, *, no_html: bool, extra_active: bool = Fals
         if ok:
             console.print(f"  [green]✓[/green] notified {platform}")
         else:
-            console.print(f"  [red]✗[/red] webhook notification failed")
+            console.print("  [red]✗[/red] webhook notification failed")
 
     return results
 
 
-async def run_batch(path: Path, *, no_html: bool, active: bool, nuclei: bool,
-                    nuclei_templates: list[str] | None, webhook: str | None) -> int:
+async def run_batch(
+    path: Path,
+    *,
+    no_html: bool,
+    active: bool,
+    nuclei: bool,
+    nuclei_templates: list[str] | None,
+    webhook: str | None,
+    enrich_cve: bool,
+    plugin_names: list[str],
+    run_default_plugins: bool,
+) -> int:
     targets = load_batch(path)
     console.print(f"[bold]Loaded {len(targets)} target(s) from {path}[/bold]")
     failures = 0
@@ -146,6 +220,9 @@ async def run_batch(path: Path, *, no_html: bool, active: bool, nuclei: bool,
                 extra_nuclei=nuclei,
                 nuclei_templates=nuclei_templates,
                 webhook=(webhook or cfg.notify.get("webhook")),
+                enrich_cve=enrich_cve,
+                plugin_names=plugin_names,
+                run_default_plugins=run_default_plugins,
             )
         except Exception as exc:
             failures += 1
@@ -154,6 +231,21 @@ async def run_batch(path: Path, *, no_html: bool, active: bool, nuclei: bool,
 
 
 async def run(args: argparse.Namespace) -> int:
+    if args.list_plugins:
+        console.print("[bold]Registered plugins:[/bold]")
+        for p in list_plugins():
+            default = (
+                "[green]active by default[/green]" if p.active_default else "[dim]opt-in[/dim]"
+            )
+            console.print(
+                f"  • [cyan]{p.name}[/cyan] ({p.source}) — {p.description or '(no description)'} — {default}"
+            )
+        return 0
+
+    discovered = discover_user_plugins()
+    if discovered:
+        console.print(f"[dim]Discovered user plugins: {discovered}[/dim]")
+
     if args.batch:
         return await run_batch(
             Path(args.batch),
@@ -162,20 +254,42 @@ async def run(args: argparse.Namespace) -> int:
             nuclei=args.nuclei,
             nuclei_templates=args.nuclei_templates.split(",") if args.nuclei_templates else None,
             webhook=args.webhook,
+            enrich_cve=args.enrich_cve,
+            plugin_names=args.plugin,
+            run_default_plugins=not args.no_plugins,
         )
 
     if not args.target or not args.output:
         console.print("[red]Either --target/--output or --batch is required.[/red]")
         return 2
 
-    cfg = TargetConfig(domain=args.target, output=args.output,
-                       active=args.active, nuclei=args.nuclei)
-    await run_one(
+    cfg = TargetConfig(
+        domain=args.target, output=args.output, active=args.active, nuclei=args.nuclei
+    )
+    results = await run_one(
         cfg,
         no_html=args.no_html,
         nuclei_templates=args.nuclei_templates.split(",") if args.nuclei_templates else None,
         webhook=args.webhook,
+        nuclei_live=args.nuclei_live,
+        enrich_cve=args.enrich_cve,
+        plugin_names=args.plugin,
+        run_default_plugins=not args.no_plugins,
     )
+
+    # Diff mode
+    if args.diff:
+        baseline_path = Path(args.diff)
+        if not baseline_path.exists():
+            console.print(f"[red]Baseline not found: {baseline_path}[/red]")
+            return 3
+        baseline = json.loads(baseline_path.read_text())
+        delta = diff_results(baseline, results)
+        diff_path = Path(args.output) / "diff.json"
+        diff_path.write_text(json.dumps(delta, indent=2, default=str))
+        console.print(f"\n[bold cyan]Diff:[/bold cyan] {diff_path}")
+        console.print(f"[bold]Summary:[/bold] {delta['summary']}")
+
     return 0
 
 

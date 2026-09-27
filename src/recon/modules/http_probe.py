@@ -1,8 +1,8 @@
 """HTTP probing — fingerprint live hosts, headers, CORS, server tech."""
+
 import asyncio
-import ssl
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from typing import Iterable
 
 import aiohttp
 import dns.resolver  # type: ignore
@@ -60,9 +60,7 @@ def _fingerprint_tech(headers: dict[str, str], body_excerpt: str) -> list[str]:
     return sorted(set(tech))
 
 
-async def _probe_one(
-    session: aiohttp.ClientSession, host: str
-) -> HostInfo | None:
+async def _probe_one(session: aiohttp.ClientSession, host: str) -> HostInfo | None:
     for scheme in PROBE_SCHEMES:
         url = f"{scheme}://{host}"
         try:
@@ -93,6 +91,7 @@ async def _probe_one(
 
 async def _extract_title(body: str) -> str:
     import re
+
     m = re.search(r"<title[^>]*>(.*?)</title>", body, re.IGNORECASE | re.DOTALL)
     return m.group(1).strip()[:120] if m else ""
 

@@ -3,12 +3,13 @@
 Falls back gracefully if nuclei is not installed. Only runs when explicit
 opt-in `--nuclei` flag is set so default behavior remains passive.
 """
+
 import asyncio
 import json
 import shutil
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 NUCLEI_BIN = shutil.which("nuclei")
 SEVERITIES = ["critical", "high", "medium"]
@@ -40,13 +41,17 @@ async def run_nuclei(
 
     cmd = [
         NUCLEI_BIN,
-        "-l", targets_path,
+        "-l",
+        targets_path,
         "-json",
-        "-severity", ",".join(sev),
+        "-severity",
+        ",".join(sev),
         "-silent",
         "-no-update-check",
-        "-timeout", "5",
-        "-retries", "1",
+        "-timeout",
+        "5",
+        "-retries",
+        "1",
     ]
     if templates:
         cmd.extend(["-t", ",".join(templates)])
@@ -58,7 +63,7 @@ async def run_nuclei(
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except (asyncio.TimeoutError, FileNotFoundError, PermissionError) as exc:
+    except (TimeoutError, FileNotFoundError, PermissionError) as exc:
         return [{"_warning": f"nuclei execution failed: {exc}"}]
     finally:
         Path(targets_path).unlink(missing_ok=True)

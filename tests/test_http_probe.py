@@ -1,5 +1,3 @@
-import pytest
-
 from recon.modules.http_probe import _fingerprint_tech
 
 

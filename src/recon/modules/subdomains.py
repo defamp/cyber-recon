@@ -1,7 +1,8 @@
 """Subdomain enumeration — passive only."""
+
 import asyncio
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 import aiohttp
 

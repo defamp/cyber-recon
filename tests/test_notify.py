@@ -1,6 +1,6 @@
 from recon.notify import (
-    _build_slack_payload,
     _build_discord_payload,
+    _build_slack_payload,
     parse_webhook_target,
 )
 
@@ -12,7 +12,11 @@ def _results():
         "alive": [{"host": "a.example.com", "url": "https://a.example.com/", "status": 200}],
         "urls": [],
         "secrets": [
-            {"url": "https://example.com/app.js", "pattern": "aws_access_key", "match": "AKIAIOSFODNN7EXAMPLE"},
+            {
+                "url": "https://example.com/app.js",
+                "pattern": "aws_access_key",
+                "match": "AKIAIOSFODNN7EXAMPLE",
+            },
         ],
         "nuclei": [],
     }

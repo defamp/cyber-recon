@@ -24,6 +24,7 @@ def test_filter_js_urls_respects_limit():
 def test_pattern_aws_access_key():
     pat = PATTERNS["aws_access_key"]
     import re
+
     text = "AKIAIOSFODNN7EXAMPLE aws_key=AKIA1234567890ABCDEF"
     matches = re.findall(pat, text)
     assert "AKIAIOSFODNN7EXAMPLE" in matches
@@ -32,18 +33,21 @@ def test_pattern_aws_access_key():
 
 def test_pattern_github_pat():
     import re
+
     pat = PATTERNS["github_pat"]
     assert re.search(pat, "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB")
 
 
 def test_pattern_slack_token():
     import re
+
     pat = PATTERNS["slack_token"]
     assert re.search(pat, "xoxb-1234567890-abcdefghij")
 
 
 def test_pattern_jwt():
     import re
+
     pat = PATTERNS["jwt"]
     jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
     assert re.search(pat, jwt)
@@ -51,12 +55,14 @@ def test_pattern_jwt():
 
 def test_pattern_google_api():
     import re
+
     pat = PATTERNS["google_api"]
     assert re.search(pat, "AIzaSyA-1234567890abcdefghijklmnopqrstuvw")
 
 
 def test_pattern_private_key():
     import re
+
     pat = PATTERNS["private_key"]
     assert re.search(pat, "-----BEGIN RSA PRIVATE KEY-----")
 

@@ -3,6 +3,7 @@
 Active in the sense it issues HTTP requests with custom Origin header,
 but no exploitation — purely defensive observation.
 """
+
 import asyncio
 import random
 import string
@@ -21,7 +22,7 @@ TIMEOUT = 8
 
 
 def _rand_origin() -> str:
-    suffix = "".join(random.choices(string.ascii_lowercase, k=10))
+    suffix = "".join(random.choices(string.ascii_lowercase, k=10))  # nosec B311
     return f"https://probe-{suffix}.example"
 
 

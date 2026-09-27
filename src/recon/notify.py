@@ -3,9 +3,6 @@
 Both platforms accept JSON POST with simple `text`/`content` + `attachments`.
 We use the most-compatible subset.
 """
-import asyncio
-import json
-from typing import Any
 
 import aiohttp
 
@@ -40,22 +37,26 @@ def _build_slack_payload(results: dict, *, include_findings: bool = True) -> dic
     if n_nuclei:
         fields.append({"title": "Nuclei hits", "value": str(n_nuclei), "short": True})
 
-    attachments: list[dict] = [{
-        "color": "#f85149" if n_secrets > 0 else "#3fb950",
-        "title": f"Recon summary — {target}",
-        "fields": fields,
-        "footer": "cyber-recon",
-    }]
+    attachments: list[dict] = [
+        {
+            "color": "#f85149" if n_secrets > 0 else "#3fb950",
+            "title": f"Recon summary — {target}",
+            "fields": fields,
+            "footer": "cyber-recon",
+        }
+    ]
 
     if include_findings and results.get("secrets"):
         # add top secrets as text
         lines = ["*Top potential secrets:*"]
         for s in results["secrets"][:5]:
-            lines.append(f"• `{s.get('pattern','')}` in `{s.get('url','')[:60]}`")
-        attachments.append({
-            "color": "#f85149",
-            "text": "\n".join(lines),
-        })
+            lines.append(f"• `{s.get('pattern', '')}` in `{s.get('url', '')[:60]}`")
+        attachments.append(
+            {
+                "color": "#f85149",
+                "text": "\n".join(lines),
+            }
+        )
 
     return {"text": f":mag: Recon finished for `{target}`", "attachments": attachments}
 
@@ -77,12 +78,14 @@ def _build_discord_payload(results: dict) -> dict:
     )
     return {
         "content": f":mag: Recon finished for `{target}`",
-        "embeds": [{
-            "title": f"Recon summary — {target}",
-            "description": description,
-            "color": color,
-            "footer": {"text": "cyber-recon"},
-        }],
+        "embeds": [
+            {
+                "title": f"Recon summary — {target}",
+                "description": description,
+                "color": color,
+                "footer": {"text": "cyber-recon"},
+            }
+        ],
     }
 
 

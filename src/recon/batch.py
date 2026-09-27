@@ -1,4 +1,5 @@
 """Batch loader — read multi-target YAML config and yield target configs."""
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any

@@ -1,8 +1,7 @@
-import json
 from pathlib import Path
 
-from recon.reporting.markdown import write_markdown_report
 from recon.reporting.html_report import write_html_report
+from recon.reporting.markdown import write_markdown_report
 
 
 def _fake_results(target="example.com"):
@@ -33,7 +32,11 @@ def _fake_results(target="example.com"):
         ],
         "urls": ["https://example.com/a", "https://example.com/b.js"],
         "secrets": [
-            {"url": "https://example.com/b.js", "pattern": "aws_access_key", "match": "AKIAIOSFODNN7EXAMPLE"},
+            {
+                "url": "https://example.com/b.js",
+                "pattern": "aws_access_key",
+                "match": "AKIAIOSFODNN7EXAMPLE",
+            },
         ],
         "cors_reflective": {},
     }
@@ -62,7 +65,14 @@ def test_html_report_creates_file(tmp_path: Path):
 
 def test_html_report_handles_empty_results(tmp_path: Path):
     out = tmp_path / "report.html"
-    empty = {"target": "empty.test", "subdomains": [], "alive": [], "urls": [], "secrets": [], "cors_reflective": {}}
+    empty = {
+        "target": "empty.test",
+        "subdomains": [],
+        "alive": [],
+        "urls": [],
+        "secrets": [],
+        "cors_reflective": {},
+    }
     write_html_report(empty, out)
     content = out.read_text()
     assert "empty.test" in content
@@ -95,21 +105,25 @@ def test_html_report_includes_searchable_attrs(tmp_path: Path):
     out = tmp_path / "report.html"
     write_html_report(_fake_results(), out)
     content = out.read_text()
-    assert 'data-searchable=' in content
+    assert "data-searchable=" in content
 
 
 def test_html_report_renders_nuclei_section(tmp_path: Path):
     out = tmp_path / "report.html"
     res = _fake_results()
     res["nuclei"] = [
-        {"template-id": "cve-2021-44228", "info": {"severity": "critical", "name": "Log4Shell"},
-         "matched-at": "https://example.com/", "type": "http"}
+        {
+            "template-id": "cve-2021-44228",
+            "info": {"severity": "critical", "name": "Log4Shell"},
+            "matched-at": "https://example.com/",
+            "type": "http",
+        }
     ]
     res["cors_reflective"] = {}
     write_html_report(res, out)
     content = out.read_text()
     assert "Log4Shell" in content
-    assert "id=\"nuclei\"" in content
+    assert 'id="nuclei"' in content
 
 
 def test_html_report_handles_nuclei_warning(tmp_path: Path):
@@ -130,8 +144,11 @@ def test_html_report_cors_reflective_issue(tmp_path: Path):
             h["cors_acao"] = "https://probe-abc.example"
             h["cors_acac"] = "true"
     res["cors_reflective"] = {
-        "a.example.com": {"reflects": True, "acao": "https://probe-abc.example",
-                          "tested_origin": "https://probe-abc.example"}
+        "a.example.com": {
+            "reflects": True,
+            "acao": "https://probe-abc.example",
+            "tested_origin": "https://probe-abc.example",
+        }
     }
     write_html_report(res, out)
     content = out.read_text()

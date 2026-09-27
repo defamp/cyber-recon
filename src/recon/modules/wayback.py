@@ -1,5 +1,4 @@
 """Wayback Machine CDX endpoint discovery."""
-import asyncio
 
 import aiohttp
 

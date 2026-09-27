@@ -1,9 +1,8 @@
 """HTML report writer — dark theme, single-file, with search + copy buttons."""
-import html
-import json
-from datetime import datetime, timezone
-from pathlib import Path
 
+import html
+from datetime import UTC, datetime
+from pathlib import Path
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -188,10 +187,13 @@ def _render_hosts(hosts: list[dict]) -> str:
     rows = []
     for h in hosts:
         status_cls = _classify_status(h.get("status", 0))
-        techs = "".join(f'<span class="tag">{html.escape(t)}</span>' for t in (h.get("technologies") or []))
+        techs = "".join(
+            f'<span class="tag">{html.escape(t)}</span>' for t in (h.get("technologies") or [])
+        )
         cors = h.get("cors_acao") or ""
         cors_html = (
-            f'<span class="cors-bad">⚠ {html.escape(cors)}</span>' if cors
+            f'<span class="cors-bad">⚠ {html.escape(cors)}</span>'
+            if cors
             else '<span class="cors-ok">none</span>'
         )
         title = html.escape((h.get("title") or "")[:80])
@@ -203,11 +205,11 @@ def _render_hosts(hosts: list[dict]) -> str:
             f'<div class="card" data-searchable="{_esc_attr(searchable)}">'
             f'<div class="card-host">'
             f'  <a class="host-url" href="{html.escape(url)}" target="_blank" rel="noopener">{html.escape(url)}</a>'
-            f'  <span class="host-status {status_cls}">{h.get("status","?")}</span>'
-            f'</div>'
+            f'  <span class="host-status {status_cls}">{h.get("status", "?")}</span>'
+            f"</div>"
             f'<div style="margin-top:6px"><strong>Server:</strong> {server or "&mdash;"} &nbsp; <strong>Title:</strong> {title or "&mdash;"}</div>'
             f'<div style="margin-top:6px"><strong>CORS ACAO:</strong> {cors_html} &nbsp; {techs}</div>'
-            f'</div>'
+            f"</div>"
         )
     return "\n".join(rows)
 
@@ -248,12 +250,18 @@ def _render_cors(hosts: list[dict], reflective: dict[str, dict]) -> str:
             host = h.get("host", "")
             if reflective.get(host, {}).get("reflects"):
                 severity = "critical"
-                notes.append(f"Reflects arbitrary Origin: {reflective[host].get('tested_origin', '')}")
+                notes.append(
+                    f"Reflects arbitrary Origin: {reflective[host].get('tested_origin', '')}"
+                )
         if severity != "ok":
-            issues.append((severity, h.get("host", ""), h.get("url", ""), acao, acac, " ".join(notes)))
+            issues.append(
+                (severity, h.get("host", ""), h.get("url", ""), acao, acac, " ".join(notes))
+            )
     if not issues:
         return '<p class="empty">No obvious CORS misconfigurations detected.</p>'
-    rows = ["<table><thead><tr><th>Severity</th><th>Host</th><th>ACAO</th><th>ACAC</th><th>Notes</th></tr></thead><tbody>"]
+    rows = [
+        "<table><thead><tr><th>Severity</th><th>Host</th><th>ACAO</th><th>ACAC</th><th>Notes</th></tr></thead><tbody>"
+    ]
     for sev, host, url, acao, acac, note in issues:
         color = {"critical": "var(--red)", "high": "var(--orange)"}.get(sev, "var(--yellow)")
         searchable = f"{host} {acao} {acac} {note}"
@@ -261,7 +269,7 @@ def _render_cors(hosts: list[dict], reflective: dict[str, dict]) -> str:
             f'<tr data-searchable="{_esc_attr(searchable)}">'
             f'<td style="color:{color};font-weight:600">{sev.upper()}</td>'
             f'<td><a class="host-url" href="{html.escape(url)}" target="_blank">{html.escape(host)}</a></td>'
-            f'<td>{html.escape(acao)}</td><td>{html.escape(acac)}</td><td>{html.escape(note)}</td></tr>'
+            f"<td>{html.escape(acao)}</td><td>{html.escape(acac)}</td><td>{html.escape(note)}</td></tr>"
         )
     rows.append("</tbody></table>")
     return "\n".join(rows)
@@ -272,16 +280,23 @@ def _render_urls(urls: list[str]) -> str:
         return '<p class="empty">No historical URLs discovered.</p>'
     shown = urls[:500]
     more = len(urls) - len(shown)
-    items = "".join(f'<li data-searchable="{_esc_attr(u)}">{html.escape(u)} '
-                    f'<button class="copy-btn" data-copy="{_esc_attr(u)}">copy</button></li>' for u in shown)
-    more_html = f'<p class="meta">… and {more} more (full list in results.json)</p>' if more > 0 else ""
+    items = "".join(
+        f'<li data-searchable="{_esc_attr(u)}">{html.escape(u)} '
+        f'<button class="copy-btn" data-copy="{_esc_attr(u)}">copy</button></li>'
+        for u in shown
+    )
+    more_html = (
+        f'<p class="meta">… and {more} more (full list in results.json)</p>' if more > 0 else ""
+    )
     return f'<div class="url-list"><ol>{items}</ol></div>{more_html}'
 
 
 def _render_secrets(secrets: list[dict]) -> str:
     if not secrets:
         return '<p class="empty">No potential secrets detected in JS files.</p>'
-    rows = ["<table><thead><tr><th>Pattern</th><th>Source URL</th><th>Match</th><th></th></tr></thead><tbody>"]
+    rows = [
+        "<table><thead><tr><th>Pattern</th><th>Source URL</th><th>Match</th><th></th></tr></thead><tbody>"
+    ]
     for s in secrets:
         match = s.get("match") or ""
         url = s.get("url") or ""
@@ -289,7 +304,7 @@ def _render_secrets(secrets: list[dict]) -> str:
         searchable = f"{pattern} {url} {match}"
         rows.append(
             f'<tr class="secret-row" data-searchable="{_esc_attr(searchable)}">'
-            f'<td>{html.escape(pattern)}</td>'
+            f"<td>{html.escape(pattern)}</td>"
             f'<td><a class="host-url" href="{html.escape(url)}" target="_blank">{html.escape(url[:80])}{"…" if len(url) > 80 else ""}</a></td>'
             f'<td><code class="secret-match">{html.escape(match[:100])}</code></td>'
             f'<td><button class="copy-btn" data-copy="{_esc_attr(match)}">copy</button></td></tr>'
@@ -304,7 +319,9 @@ def _render_nuclei(findings: list[dict]) -> str:
     # First check for warning dict
     if len(findings) == 1 and findings[0].get("_warning"):
         return f'<p class="empty">⚠ {html.escape(findings[0]["_warning"])}</p>'
-    rows = ["<table><thead><tr><th>Severity</th><th>Template</th><th>Name</th><th>Matched at</th><th>Info</th></tr></thead><tbody>"]
+    rows = [
+        "<table><thead><tr><th>Severity</th><th>Template</th><th>Name</th><th>Matched at</th><th>Info</th></tr></thead><tbody>"
+    ]
     for f in findings:
         sev = (f.get("info", {}).get("severity") or "info").lower()
         template = f.get("template-id", "")
@@ -315,8 +332,8 @@ def _render_nuclei(findings: list[dict]) -> str:
         rows.append(
             f'<tr class="nuclei-row" data-searchable="{_esc_attr(searchable)}">'
             f'<td><span class="sev-{sev}">{html.escape(sev.upper())}</span></td>'
-            f'<td><code>{html.escape(template)}</code></td>'
-            f'<td>{html.escape(name)}</td>'
+            f"<td><code>{html.escape(template)}</code></td>"
+            f"<td>{html.escape(name)}</td>"
             f'<td><a class="host-url" href="{html.escape(matched)}" target="_blank">{html.escape(matched[:60])}</a></td>'
             f'<td class="info-cell">{html.escape(description)}</td></tr>'
         )
@@ -326,7 +343,7 @@ def _render_nuclei(findings: list[dict]) -> str:
 
 def write_html_report(results: dict, path: Path) -> None:
     target = results.get("target", "?")
-    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    timestamp = datetime.now(UTC).isoformat(timespec="seconds")
     hosts = results.get("alive", [])
     subs = results.get("subdomains", [])
     urls = results.get("urls", [])
@@ -348,10 +365,15 @@ def write_html_report(results: dict, path: Path) -> None:
     secrets_color = "var(--red)" if n_secrets > 0 else "var(--green)"
     cors_color = "var(--red)" if n_cors > 0 else "var(--green)"
     if n_nuclei > 0:
-        nuclei_color = "var(--orange)" if any(
-            (f.get("info", {}).get("severity") or "").lower() in ("critical", "high")
-            for f in nuclei if not f.get("_warning")
-        ) else "var(--yellow)"
+        nuclei_color = (
+            "var(--orange)"
+            if any(
+                (f.get("info", {}).get("severity") or "").lower() in ("critical", "high")
+                for f in nuclei
+                if not f.get("_warning")
+            )
+            else "var(--yellow)"
+        )
     else:
         nuclei_color = "var(--green)"
 
