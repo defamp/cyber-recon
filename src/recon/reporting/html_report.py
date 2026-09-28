@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..modules.headers_audit import finding_sort_key
+from .markdown import scope_summary
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -90,7 +91,7 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
 <header>
   <div>
     <h1>Recon Report — <span style="color:var(--accent)">{target}</span></h1>
-    <div class="meta">Generated {timestamp} &middot; cyber-recon v0.1.0 &middot; {mode}</div>
+    <div class="meta">Generated {timestamp} &middot; cyber-recon v0.1.0 &middot; {mode}{scope_html}</div>
   </div>
   <input type="search" id="globalSearch" class="search-input" placeholder="Search report (URL, host, secret, finding)…">
 </header>
@@ -452,5 +453,8 @@ def write_html_report(results: dict, path: Path) -> None:
         headers_html=_render_headers(header_findings),
         errors_html=_render_errors(results.get("errors") or []),
         mode="active modules enabled" if results.get("active") else "passive only",
+        scope_html=(
+            f" &middot; {html.escape(scope_summary(results))}" if scope_summary(results) else ""
+        ),
     )
     path.write_text(html_out)

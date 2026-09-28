@@ -6,6 +6,22 @@ from pathlib import Path
 from ..modules.headers_audit import finding_sort_key
 
 
+def scope_summary(results: dict) -> str:
+    """One-line scope/rate description, or "" for older results without scope data."""
+    scope = results.get("scope")
+    if not scope:
+        return ""
+    oos = results.get("out_of_scope") or {}
+    parts = [f"Scope: {scope.get('source', 'default')}"]
+    if oos.get("subdomains"):
+        parts.append(f"{len(oos['subdomains'])} out-of-scope subdomain(s) not probed")
+    if oos.get("urls"):
+        parts.append(f"{oos['urls']} out-of-scope URL(s) dropped")
+    if scope.get("rate_limit"):
+        parts.append(f"rate limit {scope['rate_limit']:g} req/s")
+    return " · ".join(parts)
+
+
 def write_markdown_report(results: dict, path: Path) -> None:
     target = results.get("target", "?")
     now = datetime.now(UTC).isoformat(timespec="seconds")
@@ -13,6 +29,9 @@ def write_markdown_report(results: dict, path: Path) -> None:
     lines: list[str] = []
     lines.append(f"# Recon Report — `{target}`\n")
     lines.append(f"_Generated: {now}_\n")
+    scope_line = scope_summary(results)
+    if scope_line:
+        lines.append(f"_{scope_line}_\n")
 
     errors = results.get("errors") or []
     if errors:

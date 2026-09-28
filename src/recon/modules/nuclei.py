@@ -22,6 +22,7 @@ async def run_nuclei(
     templates: list[str] | None = None,
     tags: list[str] | None = None,
     timeout: int = 300,
+    rate_limit: float | None = None,
     on_finding: Callable[[dict], None] | None = None,
 ) -> list[dict]:
     """Run nuclei against live hosts. Returns parsed JSON findings.
@@ -62,6 +63,9 @@ async def run_nuclei(
         cmd.extend(["-t", ",".join(templates)])
     if tags:
         cmd.extend(["-tags", ",".join(tags)])
+    if rate_limit:
+        # nuclei's -rl takes whole requests/second; limits below 1 are clamped to 1
+        cmd.extend(["-rl", str(max(1, int(rate_limit)))])
 
     findings: list[dict] = []
 

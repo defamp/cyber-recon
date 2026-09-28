@@ -15,6 +15,8 @@ class TargetConfig:
     nuclei: bool = False
     skip: list[str] = field(default_factory=list)
     notify: dict[str, Any] = field(default_factory=dict)
+    scope: str | None = None  # path to a scope file (see recon.scope)
+    rate: float | None = None  # max requests/second against the target
 
     @classmethod
     def from_dict(cls, d: dict) -> "TargetConfig":
@@ -27,6 +29,8 @@ class TargetConfig:
             nuclei=d.get("nuclei", False),
             skip=d.get("skip", []),
             notify=d.get("notify", {}),
+            scope=d.get("scope"),
+            rate=d.get("rate"),
         )
 
 

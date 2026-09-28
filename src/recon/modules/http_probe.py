@@ -7,6 +7,9 @@ from dataclasses import asdict, dataclass, field
 import aiohttp
 import dns.resolver  # type: ignore
 
+from ..ratelimit import RateLimiter, scoped_get
+from ..scope import Scope
+
 CONCURRENCY = 30
 TIMEOUT = 8
 PROBE_SCHEMES = ("https", "http")  # try https first
@@ -89,23 +92,30 @@ def _set_cookies(headers) -> list[str]:
     return [value] if value else []
 
 
-async def _probe_one(session: aiohttp.ClientSession, host: str) -> HostInfo | None:
+async def _probe_one(
+    session: aiohttp.ClientSession,
+    host: str,
+    scope: Scope | None = None,
+    limiter: RateLimiter | None = None,
+) -> HostInfo | None:
     for scheme in PROBE_SCHEMES:
         url = f"{scheme}://{host}"
         try:
-            async with session.get(
+            async with scoped_get(
+                session,
                 url,
+                scope=scope,
+                limiter=limiter,
                 timeout=aiohttp.ClientTimeout(total=TIMEOUT),
-                allow_redirects=True,
                 ssl=False,
-            ) as r:
+            ) as (r, final_url):
                 headers = {k: v for k, v in r.headers.items()}
                 body = await r.text(errors="ignore")
                 excerpt = body[:2000].lower()
                 title_match = await _extract_title(body)
                 return HostInfo(
                     host=host,
-                    url=str(r.url),
+                    url=final_url,
                     status=r.status,
                     server=headers.get("Server", ""),
                     title=title_match,
@@ -127,8 +137,17 @@ async def _extract_title(body: str) -> str:
     return m.group(1).strip()[:120] if m else ""
 
 
-async def probe_targets(hosts: Iterable[str]) -> list[dict]:
-    """DNS resolve + HTTP probe concurrently. Returns list of host dicts."""
+async def probe_targets(
+    hosts: Iterable[str],
+    *,
+    scope: Scope | None = None,
+    limiter: RateLimiter | None = None,
+) -> list[dict]:
+    """DNS resolve + HTTP probe concurrently. Returns list of host dicts.
+
+    Redirects are only followed while they stay inside ``scope``; requests are
+    paced by ``limiter``.
+    """
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def bounded(host: str) -> dict | None:
@@ -136,7 +155,7 @@ async def probe_targets(hosts: Iterable[str]) -> list[dict]:
             # dnspython is blocking; run it off the event loop so probes stay concurrent
             if not await asyncio.to_thread(_resolve, host):
                 return None
-            info = await _probe_one(session, host)
+            info = await _probe_one(session, host, scope, limiter)
             return asdict(info) if info else None
 
     headers = {"User-Agent": "cyber-recon/0.1 (+passive)"}

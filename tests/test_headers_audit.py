@@ -176,7 +176,7 @@ def test_diff_tracks_header_findings_per_check():
 
 @pytest.mark.asyncio
 async def test_run_one_audits_probed_hosts_and_honours_skip(tmp_path: Path, monkeypatch):
-    async def fake_probe(hosts):
+    async def fake_probe(hosts, **_):
         return [_host()]
 
     async def fake_subs(domain, errors):

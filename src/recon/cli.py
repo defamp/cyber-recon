@@ -23,8 +23,10 @@ from .modules.wayback import fetch_wayback_urls
 from .notify import notify_webhook, parse_webhook_target
 from .plugins import discover as discover_user_plugins
 from .plugins import get_plugin, list_plugins, run_plugins
+from .ratelimit import RateLimiter
 from .reporting.html_report import write_html_report
 from .reporting.markdown import write_markdown_report
+from .scope import Scope, load_scope, normalize_host
 
 console = Console()
 
@@ -58,6 +60,16 @@ def parse_args() -> argparse.Namespace:
         "--enrich-cve",
         action="store_true",
         help="Enrich CVE-tagged Nuclei findings with GitHub advisory data",
+    )
+    p.add_argument(
+        "--scope",
+        help="Scope file (YAML or one host/wildcard/re: per line, '!' = exclude). "
+        "Default: the target domain and its subdomains",
+    )
+    p.add_argument(
+        "--rate",
+        type=float,
+        help="Max requests/second against the target (overrides the scope file's rate_limit)",
     )
     p.add_argument("--diff", help="Path to baseline results.json — emit delta report")
     p.add_argument(
@@ -108,6 +120,17 @@ async def run_one(
     if skip:
         console.print(f"[dim]Skipping modules: {sorted(skip)}[/dim]")
 
+    scope = load_scope(Path(cfg.scope)) if cfg.scope else Scope.default_for(target)
+    rate = cfg.rate if cfg.rate is not None else scope.rate_limit
+    limiter = RateLimiter(rate)
+    if cfg.scope:
+        console.print(
+            f"[dim]Scope: {cfg.scope} — {len(scope.include)} include / "
+            f"{len(scope.exclude)} exclude rule(s)[/dim]"
+        )
+    if limiter.rate:
+        console.print(f"[dim]Rate limit: {limiter.rate:g} req/s against target[/dim]")
+
     results: dict = {
         "target": target,
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -119,6 +142,8 @@ async def run_one(
         "header_findings": [],
         "nuclei": [],
         "cors_reflective": {},
+        "scope": {**scope.summary(), "rate_limit": limiter.rate},
+        "out_of_scope": {"subdomains": [], "urls": 0},
         "errors": [],
     }
     errors: list[str] = results["errors"]
@@ -135,9 +160,23 @@ async def run_one(
         console.print(f"  {mark} {len(results['subdomains'])} subdomains")
         report_errors(n_err)
 
+    # Hosts listed literally in the scope file are worth probing even if no
+    # passive source knows them.
+    if cfg.scope:
+        apex = normalize_host(target)
+        own = [h for h in scope.exact_hosts() if h == apex or h.endswith("." + apex)]
+        results["subdomains"] = sorted(set(results["subdomains"]) | set(own))
+    dropped = [h for h in results["subdomains"] if not scope.in_scope(h)]
+    if dropped:
+        results["subdomains"] = [h for h in results["subdomains"] if scope.in_scope(h)]
+        results["out_of_scope"]["subdomains"] = dropped
+        console.print(f"  [dim]- {len(dropped)} subdomain(s) out of scope, not probed[/dim]")
+
     if results["subdomains"] and "http" not in skip:
         with console.status("[bold green]Probing live hosts..."):
-            results["alive"] = await probe_targets(results["subdomains"])
+            results["alive"] = await probe_targets(
+                results["subdomains"], scope=scope, limiter=limiter
+            )
         console.print(f"  [green]✓[/green] {len(results['alive'])} live hosts")
 
     if results["alive"] and "headers" not in skip:
@@ -154,15 +193,20 @@ async def run_one(
         mark = "[green]✓[/green]" if len(errors) == n_err else "[yellow]⚠[/yellow]"
         console.print(f"  {mark} {len(results['urls'])} historical URLs")
         report_errors(n_err)
+        in_scope_urls = [u for u in results["urls"] if scope.url_in_scope(u)]
+        results["out_of_scope"]["urls"] = len(results["urls"]) - len(in_scope_urls)
+        results["urls"] = in_scope_urls
 
     if "secrets" not in skip and results["urls"]:
         with console.status("[bold green]Scanning JS files for secrets..."):
-            results["secrets"] = await scan_secrets(results["urls"])
+            results["secrets"] = await scan_secrets(results["urls"], scope=scope, limiter=limiter)
         console.print(f"  [green]✓[/green] {len(results['secrets'])} potential secrets")
 
     if active and results["alive"]:
         with console.status("[bold yellow]Testing CORS reflection (active)..."):
-            results["cors_reflective"] = await check_cors_reflection(results["alive"])
+            results["cors_reflective"] = await check_cors_reflection(
+                results["alive"], limiter=limiter
+            )
         n_reflect = sum(1 for v in results["cors_reflective"].values() if v.get("reflects"))
         console.print(
             f"  [yellow]⚠[/yellow] {n_reflect}/{len(results['alive'])} hosts reflect Origin"
@@ -180,6 +224,7 @@ async def run_one(
                         results["alive"],
                         templates=nuclei_templates,
                         tags=nuclei_tags,
+                        rate_limit=limiter.rate,
                         on_finding=table.add,
                     )
             else:
@@ -188,6 +233,7 @@ async def run_one(
                         results["alive"],
                         templates=nuclei_templates,
                         tags=nuclei_tags,
+                        rate_limit=limiter.rate,
                     )
             if enrich_cve:
                 with console.status("[bold cyan]Enriching CVEs via GitHub advisories..."):
@@ -260,11 +306,17 @@ async def run_batch(
     plugin_names: list[str],
     run_default_plugins: bool,
     nuclei_live: bool = False,
+    scope: str | None = None,
+    rate: float | None = None,
 ) -> int:
     targets = load_batch(path)
     console.print(f"[bold]Loaded {len(targets)} target(s) from {path}[/bold]")
     failures = 0
     for cfg in targets:
+        # CLI --scope is the fallback for entries without their own; --rate always wins
+        cfg.scope = cfg.scope or scope
+        if rate is not None:
+            cfg.rate = rate
         console.rule(f"[bold cyan]{cfg.domain}[/bold cyan]")
         try:
             await run_one(
@@ -302,6 +354,13 @@ async def run(args: argparse.Namespace) -> int:
     if discovered:
         console.print(f"[dim]Discovered user plugins: {discovered}[/dim]")
 
+    if args.scope:
+        try:
+            load_scope(Path(args.scope))
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]Invalid scope file {args.scope}: {exc}[/red]")
+            return 2
+
     if args.batch:
         return await run_batch(
             Path(args.batch),
@@ -315,6 +374,8 @@ async def run(args: argparse.Namespace) -> int:
             plugin_names=args.plugin,
             run_default_plugins=not args.no_plugins,
             nuclei_live=args.nuclei_live,
+            scope=args.scope,
+            rate=args.rate,
         )
 
     if not args.target or not args.output:
@@ -347,6 +408,8 @@ async def run(args: argparse.Namespace) -> int:
         active=args.active,
         nuclei=args.nuclei,
         skip=skip,
+        scope=args.scope,
+        rate=args.rate,
     )
     results = await run_one(
         cfg,

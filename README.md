@@ -56,6 +56,35 @@ PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example
   --nuclei --nuclei-tags cve,exposure --nuclei-templates http/cves/
 ```
 
+### Scope and rate limit
+
+Bug bounty programs define what you may touch and how fast. Give the program
+scope as a file and cyber-recon will only send requests to hosts inside it:
+
+```bash
+PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example \
+  --scope scope.example.txt --rate 5
+```
+
+- **Scope file**: YAML (`include:` / `exclude:` / `rate_limit:`) or plain text, one
+  entry per line with `!` for exclusions — see [`scope.example.txt`](scope.example.txt).
+  Entries are exact hosts, `*.wildcards` (subdomains only, not the apex) or
+  `re:` regexes. Exclusions always win.
+- Out-of-scope subdomains are never probed and out-of-scope Wayback URLs are
+  dropped before the JS fetch; both are recorded under `out_of_scope` in
+  `results.json`.
+- Redirects are followed manually and **stop at the first hop that leaves
+  scope**, so an SSO or third-party redirect is never requested.
+- Exact hosts in the scope file that belong to the target are probed even if
+  no passive source knows them.
+- `--rate N` paces every request to the target (probe, CORS, JS fetch) to N/s
+  and is passed to nuclei as `-rl`. Passive third-party sources (crt.sh,
+  HackerTarget, Wayback) are not paced by it.
+- Without `--scope`, the scope is the target domain and its subdomains — the
+  same hosts as before, but redirects off that domain are no longer followed.
+- In batch mode, `scope:` / `rate:` can be set per target; CLI `--scope` is the
+  fallback and CLI `--rate` overrides.
+
 ### Diff vs baseline scan
 
 ```bash
@@ -190,6 +219,8 @@ src/recon/
 ├── notify.py                 # Slack/Discord webhook payloads
 ├── plugins.py                # plugin registry + auto-discovery
 ├── diff.py                   # scan-vs-scan delta computation
+├── scope.py                  # scope file parsing + host matching
+├── ratelimit.py              # request pacing + scope-aware redirects
 ├── live_table.py             # rich live table for Nuclei findings
 ├── bundled_plugins/          # plugins shipped with the tool
 │   └── severity.py           # (tally severities — active by default)

@@ -7,6 +7,9 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from ..ratelimit import RateLimiter, scoped_get
+from ..scope import Scope
+
 CONCURRENCY = 20
 TIMEOUT = 10
 JS_FETCH_LIMIT = 200  # don't try to fetch every JS, cap at this
@@ -46,12 +49,21 @@ def _filter_js_urls(urls: list[str]) -> list[str]:
     return out
 
 
-async def _scan_url(session: aiohttp.ClientSession, url: str) -> list[Finding]:
+async def _scan_url(
+    session: aiohttp.ClientSession,
+    url: str,
+    scope: Scope | None = None,
+    limiter: RateLimiter | None = None,
+) -> list[Finding]:
     try:
-        async with session.get(
-            url, timeout=aiohttp.ClientTimeout(total=TIMEOUT), allow_redirects=True
-        ) as r:
-            if r.status >= 400:
+        async with scoped_get(
+            session,
+            url,
+            scope=scope,
+            limiter=limiter,
+            timeout=aiohttp.ClientTimeout(total=TIMEOUT),
+        ) as (r, _):
+            if r.status >= 300:  # error, or a redirect we declined to follow
                 return []
             body = await r.text(errors="ignore")
     except Exception:
@@ -63,13 +75,18 @@ async def _scan_url(session: aiohttp.ClientSession, url: str) -> list[Finding]:
     return findings
 
 
-async def scan_secrets(urls: list[str]) -> list[dict]:
+async def scan_secrets(
+    urls: list[str],
+    *,
+    scope: Scope | None = None,
+    limiter: RateLimiter | None = None,
+) -> list[dict]:
     js_urls = _filter_js_urls(urls)
     sem = asyncio.Semaphore(CONCURRENCY)
 
     async def bounded(u: str) -> list[Finding]:
         async with sem:
-            return await _scan_url(session, u)
+            return await _scan_url(session, u, scope, limiter)
 
     headers = {"User-Agent": "cyber-recon/0.1 (+passive)"}
     connector = aiohttp.TCPConnector(limit=CONCURRENCY)

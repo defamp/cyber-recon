@@ -13,6 +13,8 @@ targets:
 
   - domain: bar.example.com
     output: output/bar
+    scope: scope.example.txt   # only probe hosts allowed by the program
+    rate: 5                    # max requests/second against the target
     active: true
     nuclei: true            # requires nuclei binary in PATH
     notify:

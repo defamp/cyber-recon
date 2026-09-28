@@ -1,0 +1,11 @@
+# Example scope file — pass with --scope scope.example.txt
+# One entry per line. "!" prefix = exclude (exclusions always win).
+#   *.example.com      any subdomain (NOT the apex — list it separately)
+#   example.com        exact host
+#   re:^api\d+\.example\.com$   regex, full match on the hostname
+# URLs are accepted; only the hostname is used.
+
+example.com
+*.example.com
+!legacy.example.com
+!*.corp.example.com
