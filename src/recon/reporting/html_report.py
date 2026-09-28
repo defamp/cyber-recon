@@ -4,6 +4,8 @@ import html
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..modules.headers_audit import finding_sort_key
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -99,6 +101,7 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
   <div class="stat" data-jump="cors"><div class="stat-num" style="color:{cors_color}">{n_cors_issues}</div><div class="stat-label">CORS issues</div></div>
   <div class="stat" data-jump="urls"><div class="stat-num">{n_urls}</div><div class="stat-label">Historical URLs</div></div>
   <div class="stat" data-jump="secrets"><div class="stat-num" style="color:{secrets_color}">{n_secrets}</div><div class="stat-label">Potential secrets</div></div>
+  <div class="stat" data-jump="headers"><div class="stat-num" style="color:{headers_color}">{n_header_issues}</div><div class="stat-label">Header issues</div></div>
   <div class="stat" data-jump="nuclei"><div class="stat-num" style="color:{nuclei_color}">{n_nuclei}</div><div class="stat-label">Nuclei hits</div></div>
 </section>
 
@@ -116,6 +119,9 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
 
 <h2 id="secrets">Potential secrets <span class="section-count">({n_secrets})</span></h2>
 {secrets_html}
+
+<h2 id="headers">Security headers <span class="section-count">({n_headers} findings)</span></h2>
+{headers_html}
 
 <h2 id="nuclei">Nuclei findings <span class="section-count">({n_nuclei})</span></h2>
 {nuclei_html}
@@ -324,6 +330,30 @@ def _render_secrets(secrets: list[dict]) -> str:
     return "\n".join(rows)
 
 
+def _render_headers(findings: list[dict]) -> str:
+    if not findings:
+        return '<p class="empty">No header findings (audit skipped or no live hosts).</p>'
+    rows = [
+        "<table><thead><tr><th>Severity</th><th>Host</th><th>Check</th><th>Detail</th></tr></thead><tbody>"
+    ]
+    for f in sorted(findings, key=finding_sort_key):
+        sev = (f.get("severity") or "info").lower()
+        host = f.get("host", "")
+        url = f.get("url", "")
+        check = f.get("check", "")
+        detail = f.get("detail", "")
+        searchable = f"{host} {check} {detail} {sev}"
+        rows.append(
+            f'<tr data-searchable="{_esc_attr(searchable)}">'
+            f'<td><span class="sev-{html.escape(sev)}">{html.escape(sev.upper())}</span></td>'
+            f'<td><a class="host-url" href="{html.escape(url)}" target="_blank">{html.escape(host)}</a></td>'
+            f"<td><code>{html.escape(check)}</code></td>"
+            f"<td>{html.escape(detail)}</td></tr>"
+        )
+    rows.append("</tbody></table>")
+    return "\n".join(rows)
+
+
 def _render_nuclei(findings: list[dict]) -> str:
     if not findings:
         return '<p class="empty">No Nuclei findings (binary missing or none detected).</p>'
@@ -374,6 +404,10 @@ def write_html_report(results: dict, path: Path) -> None:
     secrets = results.get("secrets", [])
     nuclei = results.get("nuclei", [])
     reflective = results.get("cors_reflective", {})
+    header_findings = results.get("header_findings", [])
+    # Info-level findings (missing Referrer-Policy etc.) would drown the stat card
+    n_header_issues = sum(1 for f in header_findings if f.get("severity") != "info")
+    headers_color = "var(--yellow)" if n_header_issues > 0 else "var(--green)"
 
     n_cors = len(_cors_issues(hosts, reflective))
 
@@ -412,6 +446,10 @@ def write_html_report(results: dict, path: Path) -> None:
         urls_html=_render_urls(urls),
         secrets_html=_render_secrets(secrets),
         nuclei_html=_render_nuclei(nuclei),
+        n_headers=len(header_findings),
+        n_header_issues=n_header_issues,
+        headers_color=headers_color,
+        headers_html=_render_headers(header_findings),
         errors_html=_render_errors(results.get("errors") or []),
         mode="active modules enabled" if results.get("active") else "passive only",
     )

@@ -1,7 +1,7 @@
 """Diff mode — compare two scan results and produce a delta report.
 
-Compares per-collection: subdomains, alive, urls, secrets, nuclei findings,
-CORS reflection map. Returns:
+Compares per-collection: subdomains, alive, urls, secrets, header findings,
+nuclei findings, CORS reflection map. Returns:
     {
         "added": {...},       # new in 'current' vs 'baseline'
         "removed": {...},     # gone from 'current'
@@ -28,7 +28,7 @@ def _sevs(items: list[dict]) -> dict[str, int]:
 
 def diff_results(baseline: dict, current: dict) -> dict[str, Any]:
     """Return the delta between two scan results."""
-    keys = ("subdomains", "alive", "urls", "secrets")
+    keys = ("subdomains", "alive", "urls", "secrets", "header_findings")
     added: dict[str, list] = {k: [] for k in keys}
     removed: dict[str, list] = {k: [] for k in keys}
     unchanged: dict[str, int] = {}
@@ -53,7 +53,10 @@ def diff_results(baseline: dict, current: dict) -> dict[str, Any]:
         out: dict = {}
         for it in items:
             if isinstance(it, dict):
-                key = it.get("url") or it.get("host")
+                if kind == "header_findings":
+                    key = f"{it.get('host', '')}|{it.get('check', '')}|{it.get('detail', '')}"
+                else:
+                    key = it.get("url") or it.get("host")
                 if not key:
                     if kind == "secrets":
                         key = f"{it.get('pattern', '')}|{it.get('match', '')}"

@@ -3,6 +3,8 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..modules.headers_audit import finding_sort_key
+
 
 def write_markdown_report(results: dict, path: Path) -> None:
     target = results.get("target", "?")
@@ -67,6 +69,24 @@ def write_markdown_report(results: dict, path: Path) -> None:
                     url=s.get("url", ""),
                     pat=s.get("pattern", ""),
                     m=(s.get("match") or "")[:80],
+                )
+            )
+    else:
+        lines.append("_none_")
+    lines.append("")
+
+    findings = results.get("header_findings", [])
+    lines.append(f"## Security headers ({len(findings)})\n")
+    if findings:
+        lines.append("| Severity | Host | Check | Detail |")
+        lines.append("|----------|------|-------|--------|")
+        for f in sorted(findings, key=finding_sort_key):
+            lines.append(
+                "| {sev} | {host} | {check} | {detail} |".format(
+                    sev=f.get("severity", ""),
+                    host=f.get("host", ""),
+                    check=f.get("check", ""),
+                    detail=(f.get("detail") or "").replace("|", "\\|"),
                 )
             )
     else:

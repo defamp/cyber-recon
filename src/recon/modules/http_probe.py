@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 import aiohttp
 import dns.resolver  # type: ignore
@@ -10,6 +10,19 @@ import dns.resolver  # type: ignore
 CONCURRENCY = 30
 TIMEOUT = 8
 PROBE_SCHEMES = ("https", "http")  # try https first
+
+# Response headers kept (lowercased) for the passive header audit.
+AUDIT_HEADERS = (
+    "strict-transport-security",
+    "content-security-policy",
+    "x-frame-options",
+    "x-content-type-options",
+    "referrer-policy",
+    "permissions-policy",
+    "server",
+    "x-powered-by",
+    "x-aspnet-version",
+)
 
 
 @dataclass
@@ -22,6 +35,8 @@ class HostInfo:
     cors_acao: str
     cors_acac: str
     technologies: list[str]
+    security_headers: dict[str, str] = field(default_factory=dict)
+    set_cookies: list[str] = field(default_factory=list)
 
 
 def _resolve(host: str) -> list[str]:
@@ -60,6 +75,20 @@ def _fingerprint_tech(headers: dict[str, str], body_excerpt: str) -> list[str]:
     return sorted(set(tech))
 
 
+def _audit_subset(headers: dict[str, str]) -> dict[str, str]:
+    lower = {k.lower(): v for k, v in headers.items()}
+    return {name: lower[name] for name in AUDIT_HEADERS if name in lower}
+
+
+def _set_cookies(headers) -> list[str]:
+    # A plain dict collapses repeated Set-Cookie headers; aiohttp's multidict keeps them all.
+    getall = getattr(headers, "getall", None)
+    if getall is not None:
+        return list(getall("Set-Cookie", []))
+    value = headers.get("Set-Cookie") or headers.get("set-cookie")
+    return [value] if value else []
+
+
 async def _probe_one(session: aiohttp.ClientSession, host: str) -> HostInfo | None:
     for scheme in PROBE_SCHEMES:
         url = f"{scheme}://{host}"
@@ -83,6 +112,8 @@ async def _probe_one(session: aiohttp.ClientSession, host: str) -> HostInfo | No
                     cors_acao=headers.get("Access-Control-Allow-Origin", ""),
                     cors_acac=headers.get("Access-Control-Allow-Credentials", ""),
                     technologies=_fingerprint_tech(headers, excerpt),
+                    security_headers=_audit_subset(headers),
+                    set_cookies=_set_cookies(r.headers),
                 )
         except Exception:
             continue

@@ -14,6 +14,7 @@ from .diff import diff_results
 from .live_table import LiveNucleiTable
 from .modules.advisories import enrich_nuclei
 from .modules.cors import check_cors_reflection
+from .modules.headers_audit import audit_headers
 from .modules.http_probe import probe_targets
 from .modules.nuclei import nuclei_available, run_nuclei
 from .modules.secrets import scan_secrets
@@ -71,6 +72,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-wayback", action="store_true")
     p.add_argument("--no-secrets", action="store_true")
     p.add_argument(
+        "--no-headers", action="store_true", help="Skip the passive security header audit"
+    )
+    p.add_argument(
         "--no-html", action="store_true", help="Skip HTML report (still emits Markdown + JSON)"
     )
     p.add_argument(
@@ -112,6 +116,7 @@ async def run_one(
         "alive": [],
         "urls": [],
         "secrets": [],
+        "header_findings": [],
         "nuclei": [],
         "cors_reflective": {},
         "errors": [],
@@ -134,6 +139,13 @@ async def run_one(
         with console.status("[bold green]Probing live hosts..."):
             results["alive"] = await probe_targets(results["subdomains"])
         console.print(f"  [green]✓[/green] {len(results['alive'])} live hosts")
+
+    if results["alive"] and "headers" not in skip:
+        results["header_findings"] = audit_headers(results["alive"])
+        n_low = sum(1 for f in results["header_findings"] if f["severity"] != "info")
+        console.print(
+            f"  [green]✓[/green] {len(results['header_findings'])} header findings ({n_low} low+)"
+        )
 
     if "wayback" not in skip:
         n_err = len(errors)
@@ -325,6 +337,7 @@ async def run(args: argparse.Namespace) -> int:
             ("subdomains", args.no_subdomains),
             ("wayback", args.no_wayback),
             ("secrets", args.no_secrets),
+            ("headers", args.no_headers),
         )
         if flag
     ]

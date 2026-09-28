@@ -17,6 +17,7 @@ Single CLI that runs a coordinated recon sweep against a target domain, with
 |---|---|---|
 | Subdomain enum | crt.sh + HackerTarget passive aggregation | passive |
 | HTTP probe | DNS resolve, status, server, title, tech fingerprint | passive |
+| Security headers | HSTS, CSP (unsafe-inline/eval, wildcard), clickjacking, nosniff, Referrer-Policy, version disclosure, cookie flags — from headers already fetched by the probe | passive (`--no-headers` to skip) |
 | CORS reflection | Sends random Origin header, detects arbitrary reflection | opt-in `--active` |
 | Wayback mining | Historical URLs from Wayback CDX | passive |
 | Secret scanner | Regex: AWS, GitHub, Slack, Google, Stripe, JWT, generic API keys in JS files | passive |
@@ -140,6 +141,15 @@ The HTML report supports:
 - Click stat cards to jump to sections
 - Severity color coding (critical=red, high=orange, medium=yellow)
 
+### Security header audit
+
+Runs automatically on every live host and adds no extra requests: it reuses the
+headers from the HTTP probe (final response after redirects). Findings are
+rated `low` or `info` only — most programs treat missing headers as
+informative, so use them for hardening reports rather than as standalone bugs.
+Hosts answering 5xx are skipped. The `header_findings` collection is included
+in `--diff` output, keyed by host + check.
+
 ## Development
 
 ### Run tests
@@ -186,6 +196,7 @@ src/recon/
 ├── modules/
 │   ├── subdomains.py         # crt.sh + HackerTarget
 │   ├── http_probe.py         # DNS + HTTP probe + tech fingerprint
+│   ├── headers_audit.py      # security header + cookie flag audit
 │   ├── cors.py               # Origin reflection test
 │   ├── wayback.py            # CDX endpoint discovery
 │   ├── secrets.py            # regex secret scanner
