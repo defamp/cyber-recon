@@ -19,11 +19,13 @@ from .modules.http_probe import probe_targets
 from .modules.nuclei import nuclei_available, run_nuclei
 from .modules.secrets import CONFIDENCE_ORDER, filter_by_confidence, scan_secrets
 from .modules.subdomains import SOURCES, enumerate_subdomains, hosts_from_urls
+from .modules.tls import check_tls
 from .modules.wayback import fetch_wayback_urls
 from .monitor import DEFAULT_KEEP, alert_items, latest_snapshot, save_snapshot
 from .notify import notify_alert, notify_webhook, parse_webhook_target
 from .plugins import discover as discover_user_plugins
 from .plugins import get_plugin, list_plugins, run_plugins
+from .priority import score_hosts
 from .ratelimit import RateLimiter
 from .reporting.html_report import write_html_report
 from .reporting.markdown import write_markdown_report
@@ -111,6 +113,11 @@ def parse_args() -> argparse.Namespace:
         "--no-headers", action="store_true", help="Skip the passive security header audit"
     )
     p.add_argument(
+        "--no-tls",
+        action="store_true",
+        help="Skip the TLS certificate check (one handshake per HTTPS host)",
+    )
+    p.add_argument(
         "--no-html", action="store_true", help="Skip HTML report (still emits Markdown + JSON)"
     )
     p.add_argument(
@@ -168,6 +175,9 @@ async def run_one(
         "urls": [],
         "secrets": [],
         "header_findings": [],
+        "tls": [],
+        "tls_findings": [],
+        "priority": [],
         "nuclei": [],
         "cors_reflective": {},
         "scope": {**scope.summary(), "rate_limit": limiter.rate},
@@ -236,6 +246,18 @@ async def run_one(
         n_low = sum(1 for f in results["header_findings"] if f["severity"] != "info")
         console.print(
             f"  [green]✓[/green] {len(results['header_findings'])} header findings ({n_low} low+)"
+        )
+
+    if results["alive"] and "tls" not in skip:
+        label = "Checking TLS certificates" + (" + legacy protocols" if active else "")
+        with console.status(f"[bold green]{label}..."):
+            results["tls"], results["tls_findings"] = await check_tls(
+                results["alive"], legacy=active, limiter=limiter
+            )
+        n_bad = sum(1 for f in results["tls_findings"] if f["severity"] != "info")
+        console.print(
+            f"  [green]✓[/green] TLS checked on {len(results['tls'])} HTTPS host(s), "
+            f"{n_bad} issue(s)"
         )
 
     if "secrets" not in skip and results["urls"]:
@@ -320,12 +342,14 @@ async def run_one(
             )
 
     alerts: dict[str, list[str]] = {}
+    new_hosts: set[str] = set()
     if cfg.monitor:
         if previous is None:
             console.print("  [cyan]i[/cyan] monitor: first scan — saved as baseline")
         else:
             delta = diff_results(previous, results)
             alerts = alert_items(delta)
+            new_hosts = {(h.get("host") or "").lower() for h in delta["added"]["alive"]}
             (out_dir / "diff.json").write_text(json.dumps(delta, indent=2, default=str))
             results["changes"] = {
                 "baseline_timestamp": previous.get("timestamp"),
@@ -333,6 +357,14 @@ async def run_one(
                 "new": {k: len(v) for k, v in alerts.items()},
             }
             console.print(f"  [cyan]i[/cyan] monitor: {delta['summary']}")
+
+    results["priority"] = score_hosts(results, new_hosts)
+    top = [p for p in results["priority"] if p["score"] > 0][:3]
+    if top:
+        console.print(
+            "  [magenta]★[/magenta] look first: "
+            + ", ".join(f"{p['host']} ({p['score']})" for p in top)
+        )
 
     # Write artifacts
     json_path = out_dir / "results.json"
@@ -499,6 +531,7 @@ async def run(args: argparse.Namespace) -> int:
             ("wayback", args.no_wayback),
             ("secrets", args.no_secrets),
             ("headers", args.no_headers),
+            ("tls", args.no_tls),
         )
         if flag
     ]

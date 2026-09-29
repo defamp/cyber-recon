@@ -184,10 +184,12 @@ async def test_run_one_audits_probed_hosts_and_honours_skip(tmp_path: Path, monk
 
     monkeypatch.setattr("recon.cli.probe_targets", fake_probe)
     monkeypatch.setattr("recon.cli.enumerate_subdomains", fake_subs)
-    cfg = TargetConfig(domain="x.com", output=str(tmp_path / "x"), skip=["wayback"])
+    cfg = TargetConfig(domain="x.com", output=str(tmp_path / "x"), skip=["wayback", "tls"])
     result = await run_one(cfg, no_html=True)
     assert "hsts-missing" in _checks(result["header_findings"])
 
-    cfg = TargetConfig(domain="x.com", output=str(tmp_path / "y"), skip=["wayback", "headers"])
+    cfg = TargetConfig(
+        domain="x.com", output=str(tmp_path / "y"), skip=["wayback", "headers", "tls"]
+    )
     result = await run_one(cfg, no_html=True)
     assert result["header_findings"] == []

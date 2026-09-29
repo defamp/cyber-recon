@@ -177,6 +177,7 @@ def _args(tmp_path: Path, **kw) -> argparse.Namespace:
         no_wayback=True,
         no_secrets=True,
         no_headers=True,
+        no_tls=True,
         scope=None,
         rate=None,
         sources=None,

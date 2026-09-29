@@ -83,6 +83,11 @@ def alert_items(delta: dict) -> dict[str, list[str]]:
             for f in added.get("header_findings") or []
             if f.get("severity") != "info"
         ],
+        "TLS issues": [
+            f"{f.get('host', '?')}: {f.get('check', '?')} ({f.get('severity', '?')})"
+            for f in added.get("tls_findings") or []
+            if f.get("severity") != "info"
+        ],
         "nuclei": [
             f"{(f.get('info') or {}).get('severity', '?')}: {f.get('template-id', '?')} "
             f"at {f.get('matched-at', '?')}"

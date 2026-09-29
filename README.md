@@ -18,6 +18,8 @@ Single CLI that runs a coordinated recon sweep against a target domain, with
 | Subdomain enum | crt.sh, HackerTarget, CertSpotter, AlienVault OTX, urlscan.io + hosts seen in Wayback URLs | passive |
 | HTTP probe | DNS resolve, status, server, title, tech fingerprint | passive |
 | Security headers | HSTS, CSP (unsafe-inline/eval, wildcard), clickjacking, nosniff, Referrer-Policy, version disclosure, cookie flags — from headers already fetched by the probe | passive (`--no-headers` to skip) |
+| TLS certificates | One verified handshake per HTTPS host: expired, self-signed, hostname mismatch, untrusted chain, expiring < 14 days; TLS 1.0/1.1 acceptance with `--active` | handshake only (`--no-tls` to skip) |
+| Priority score | Ranks live hosts by secrets, Nuclei, CORS, header/TLS issues, interesting names/titles, auth walls, new-since-last-scan | no requests |
 | CORS reflection | Sends random Origin header, detects arbitrary reflection | opt-in `--active` |
 | Wayback mining | Historical URLs from Wayback CDX | passive |
 | Secret scanner | Regex (AWS, GitHub, GitLab, npm, Slack, SendGrid, Google, Stripe, JWT, private keys, generic keys) in JS files, then triaged into high/medium/low confidence | passive |
@@ -114,6 +116,38 @@ python3 -m recon.cli --target example.com --output output/example
 # Later — show delta vs prior results.json
 python3 -m recon.cli --target example.com --output output/example --diff output/example/results.json
 ```
+
+### Where to look first (priority score)
+
+Every live host gets a score — a plain sum of weighted signals, each listed
+with its points so the ranking can be checked at a glance. The top 15 open
+both reports; the full list is in `results.json` → `priority`.
+
+| Signal | Points |
+|---|---|
+| secret on the host (high / medium / low confidence) | 40 / 15 / 3 |
+| Nuclei finding (critical / high / medium / low) | 50 / 30 / 12 / 4 |
+| reflects arbitrary Origin (+ credentials) | 25 (+15) |
+| header/TLS findings (medium 8, low 3 each) | capped at 15 |
+| name or title keyword (`admin`, `jenkins`, `staging`, `api`, `swagger`, …; whole words) | 8 each, max 16 |
+| 401/403 · 5xx | 5 · 3 |
+| new since the last scan (`--monitor`) | 15 |
+
+The weights are judgment calls, not calibrated on data: use the ranking to
+decide what to open first, never as a severity.
+
+### TLS certificate check
+
+One handshake per HTTPS live host, verified against the system CA store the
+way a browser would. OpenSSL's failure reason becomes the finding
+(`cert-expired` medium; `cert-self-signed`, `cert-hostname-mismatch`,
+`cert-untrusted` low); valid certificates record protocol, issuer and days
+left, with an info finding under 14 days. With `--active`, one extra
+handshake per host checks whether TLS 1.0/1.1 is still accepted; if the local
+OpenSSL cannot offer those versions the result is `untestable`, not
+"rejected". Handshakes honour `--rate`, and connection errors are recorded on
+the host, not reported as findings. On a machine without a CA bundle every
+host shows up as `cert-untrusted` — install your OS's `ca-certificates`.
 
 ### Secret triage
 
@@ -288,6 +322,7 @@ src/recon/
 ├── batch.py                  # YAML multi-target loader
 ├── notify.py                 # Slack/Discord webhook payloads
 ├── monitor.py                # scan history + new-finding alerts
+├── priority.py               # where-to-look-first host ranking
 ├── plugins.py                # plugin registry + auto-discovery
 ├── diff.py                   # scan-vs-scan delta computation
 ├── scope.py                  # scope file parsing + host matching
@@ -299,6 +334,7 @@ src/recon/
 │   ├── subdomains.py         # passive sources: crt.sh, HackerTarget, CertSpotter, OTX, urlscan
 │   ├── http_probe.py         # DNS + HTTP probe + tech fingerprint
 │   ├── headers_audit.py      # security header + cookie flag audit
+│   ├── tls.py                # certificate verification + legacy TLS check
 │   ├── cors.py               # Origin reflection test
 │   ├── wayback.py            # CDX endpoint discovery
 │   ├── secrets.py            # regex secret scanner

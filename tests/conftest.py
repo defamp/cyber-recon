@@ -29,6 +29,15 @@ def _no_real_network(monkeypatch):
         raise RuntimeError(f"real network request in tests: {method} {url}")
 
     monkeypatch.setattr(aiohttp.ClientSession, "_request", _blocked)
+
+    # The TLS check opens raw connections, which the aiohttp guard can't see
+    from recon.modules import tls
+
+    async def _blocked_handshake(host, port, ctx):
+        attempts.append(f"TLS {host}:{port}")
+        raise RuntimeError(f"real TLS handshake in tests: {host}:{port}")
+
+    monkeypatch.setattr(tls, "_handshake", _blocked_handshake)
     yield
     if attempts:
         pytest.fail(f"test made real network requests: {attempts}")

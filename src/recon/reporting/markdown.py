@@ -29,6 +29,31 @@ def source_summary(results: dict) -> str:
     return ", ".join(f"{name}={count}" for name, count in stats.items())
 
 
+PRIORITY_TOP = 15
+
+
+def _findings_table(lines: list[str], title: str, findings: list[dict]) -> None:
+    lines.append(f"## {title} ({len(findings)})\n")
+    if not findings:
+        lines.append("_none_")
+        return
+    lines.append("| Severity | Host | Check | Detail |")
+    lines.append("|----------|------|-------|--------|")
+    for f in sorted(findings, key=finding_sort_key):
+        lines.append(
+            "| {sev} | {host} | {check} | {detail} |".format(
+                sev=f.get("severity", ""),
+                host=f.get("host", ""),
+                check=f.get("check", ""),
+                detail=(f.get("detail") or "").replace("|", "\\|"),
+            )
+        )
+
+
+def top_priorities(results: dict, n: int = PRIORITY_TOP) -> list[dict]:
+    return [p for p in results.get("priority") or [] if p.get("score", 0) > 0][:n]
+
+
 def write_markdown_report(results: dict, path: Path) -> None:
     target = results.get("target", "?")
     now = datetime.now(UTC).isoformat(timespec="seconds")
@@ -45,6 +70,18 @@ def write_markdown_report(results: dict, path: Path) -> None:
         lines.append(f"## ⚠ Source errors ({len(errors)})\n")
         lines.append("_Counts below may be incomplete — these sources failed:_\n")
         lines.extend(f"- {e}" for e in errors)
+        lines.append("")
+
+    top = top_priorities(results)
+    if top:
+        lines.append("## Where to look first\n")
+        lines.append("_Heuristic ranking of live hosts — a starting point, not a severity._\n")
+        lines.append("| Score | Host | Why |")
+        lines.append("|------:|------|-----|")
+        for p in top:
+            lines.append(
+                f"| {p['score']} | {p.get('url') or p['host']} | {'; '.join(p['reasons'])} |"
+            )
         lines.append("")
 
     subdomains = results.get("subdomains", [])
@@ -106,21 +143,8 @@ def write_markdown_report(results: dict, path: Path) -> None:
         lines.append("_none_")
     lines.append("")
 
-    findings = results.get("header_findings", [])
-    lines.append(f"## Security headers ({len(findings)})\n")
-    if findings:
-        lines.append("| Severity | Host | Check | Detail |")
-        lines.append("|----------|------|-------|--------|")
-        for f in sorted(findings, key=finding_sort_key):
-            lines.append(
-                "| {sev} | {host} | {check} | {detail} |".format(
-                    sev=f.get("severity", ""),
-                    host=f.get("host", ""),
-                    check=f.get("check", ""),
-                    detail=(f.get("detail") or "").replace("|", "\\|"),
-                )
-            )
-    else:
-        lines.append("_none_")
+    _findings_table(lines, "Security headers", results.get("header_findings") or [])
+    lines.append("")
+    _findings_table(lines, "TLS certificates", results.get("tls_findings") or [])
 
     path.write_text("\n".join(lines) + "\n")
