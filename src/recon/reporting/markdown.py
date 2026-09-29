@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..modules.headers_audit import finding_sort_key
+from ..modules.secrets import secret_sort_key
 
 
 def scope_summary(results: dict) -> str:
@@ -89,14 +90,16 @@ def write_markdown_report(results: dict, path: Path) -> None:
     secrets = results.get("secrets", [])
     lines.append(f"## Potential secrets ({len(secrets)})\n")
     if secrets:
-        lines.append("| Source | Pattern | Match |")
-        lines.append("|--------|---------|-------|")
-        for s in secrets:
+        lines.append("| Confidence | Source | Pattern | Match | Why |")
+        lines.append("|------------|--------|---------|-------|-----|")
+        for s in sorted(secrets, key=secret_sort_key):
             lines.append(
-                "| {url} | {pat} | `{m}` |".format(
+                "| {conf} | {url} | {pat} | `{m}` | {why} |".format(
+                    conf=s.get("confidence") or "—",
                     url=s.get("url", ""),
                     pat=s.get("pattern", ""),
                     m=(s.get("match") or "")[:80],
+                    why=(s.get("reason") or "").replace("|", "\\|"),
                 )
             )
     else:

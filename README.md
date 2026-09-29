@@ -20,7 +20,7 @@ Single CLI that runs a coordinated recon sweep against a target domain, with
 | Security headers | HSTS, CSP (unsafe-inline/eval, wildcard), clickjacking, nosniff, Referrer-Policy, version disclosure, cookie flags — from headers already fetched by the probe | passive (`--no-headers` to skip) |
 | CORS reflection | Sends random Origin header, detects arbitrary reflection | opt-in `--active` |
 | Wayback mining | Historical URLs from Wayback CDX | passive |
-| Secret scanner | Regex: AWS, GitHub, Slack, Google, Stripe, JWT, generic API keys in JS files | passive |
+| Secret scanner | Regex (AWS, GitHub, GitLab, npm, Slack, SendGrid, Google, Stripe, JWT, private keys, generic keys) in JS files, then triaged into high/medium/low confidence | passive |
 | Nuclei integration | Runs nuclei binary, parses JSON output | opt-in `--nuclei` |
 | CVE enrichment | Looks up CVE-tagged Nuclei findings against GitHub Advisory DB | opt-in `--enrich-cve` |
 | Plugins | Auto-loaded bundled + user-supplied transformers | optional |
@@ -114,6 +114,23 @@ python3 -m recon.cli --target example.com --output output/example
 # Later — show delta vs prior results.json
 python3 -m recon.cli --target example.com --output output/example --diff output/example/results.json
 ```
+
+### Secret triage
+
+Every regex hit is classified before it reaches the report:
+
+| Result | When |
+|---|---|
+| dropped | placeholders and doc examples (`EXAMPLE`, `xxxx`, `your_…`, `dummy`, runs like `000000`), generic `api_key = "…"` values that are not random-looking (need letters + digits and ≥ 3.5 bits/char entropy), strings that look like JWTs but do not decode |
+| **high** | provider-specific formats (AWS `AKIA…`, `ghp_`/`github_pat_`, `glpat-`, `npm_`, Slack tokens/webhooks, SendGrid, private key blocks), Stripe live keys, AWS secrets next to their variable name |
+| **medium** | Google `AIza…` keys (often public by design — check restrictions), random-looking generic keys |
+| **low** | Stripe test keys, decodable JWTs (often public/anon tokens) |
+
+Each finding carries `confidence` and `reason`; reports sort by confidence
+and the same match is reported once per file. `--secrets-min-confidence medium`
+(or `secrets_min_confidence:` per batch target) drops the rest, and monitor
+alerts never fire for low-confidence secrets. A confidence is a triage hint,
+not proof: verify a key's validity and scope before reporting it.
 
 ### Continuous monitoring
 

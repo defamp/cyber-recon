@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..modules.headers_audit import finding_sort_key
+from ..modules.secrets import secret_sort_key
 from .markdown import scope_summary, source_summary
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -313,15 +314,21 @@ def _render_secrets(secrets: list[dict]) -> str:
     if not secrets:
         return '<p class="empty">No potential secrets detected in JS files.</p>'
     rows = [
-        "<table><thead><tr><th>Pattern</th><th>Source URL</th><th>Match</th><th></th></tr></thead><tbody>"
+        "<table><thead><tr><th>Confidence</th><th>Pattern</th><th>Source URL</th><th>Match</th><th></th></tr></thead><tbody>"
     ]
-    for s in secrets:
+    for s in sorted(secrets, key=secret_sort_key):
         match = s.get("match") or ""
         url = s.get("url") or ""
         pattern = s.get("pattern") or ""
-        searchable = f"{pattern} {url} {match}"
+        confidence = s.get("confidence") or "—"
+        reason = s.get("reason") or ""
+        sev_cls = {"high": "sev-critical", "medium": "sev-medium", "low": "sev-low"}.get(
+            confidence, "sev-info"
+        )
+        searchable = f"{confidence} {pattern} {url} {match} {reason}"
         rows.append(
             f'<tr class="secret-row" data-searchable="{_esc_attr(searchable)}">'
+            f'<td><span class="{sev_cls}" title="{_esc_attr(reason)}">{html.escape(confidence.upper())}</span></td>'
             f"<td>{html.escape(pattern)}</td>"
             f'<td><a class="host-url" href="{html.escape(url)}" target="_blank">{html.escape(url[:80])}{"…" if len(url) > 80 else ""}</a></td>'
             f'<td><code class="secret-match">{html.escape(match[:100])}</code></td>'

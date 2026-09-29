@@ -63,8 +63,8 @@ def save_snapshot(out_dir: Path, results: dict, keep: int = DEFAULT_KEEP) -> Pat
 def alert_items(delta: dict) -> dict[str, list[str]]:
     """New findings worth a notification, as short display strings per category.
 
-    Removals and info-level header findings are left out on purpose: they are
-    in diff.json, but they are not something to be woken up for.
+    Removals, info-level header findings and low-confidence secrets are left
+    out on purpose: they are in diff.json, but not something to be woken up for.
     """
     added = delta.get("added") or {}
     items: dict[str, list[str]] = {
@@ -74,7 +74,9 @@ def alert_items(delta: dict) -> dict[str, list[str]]:
             for h in added.get("alive") or []
         ),
         "secrets": [
-            f"{s.get('pattern', '?')} in {s.get('url', '?')}" for s in added.get("secrets") or []
+            f"{s.get('pattern', '?')} ({s.get('confidence', '?')}) in {s.get('url', '?')}"
+            for s in added.get("secrets") or []
+            if s.get("confidence") != "low"
         ],
         "header issues": [
             f"{f.get('host', '?')}: {f.get('check', '?')} ({f.get('severity', '?')})"

@@ -6,6 +6,7 @@ We use the most-compatible subset.
 
 import aiohttp
 
+from .modules.secrets import secret_sort_key
 from .monitor import format_alert
 
 TIMEOUT = 10
@@ -51,8 +52,9 @@ def _build_slack_payload(results: dict, *, include_findings: bool = True) -> dic
     if include_findings and results.get("secrets"):
         # add top secrets as text
         lines = ["*Top potential secrets:*"]
-        for s in results["secrets"][:5]:
-            lines.append(f"• `{s.get('pattern', '')}` in `{s.get('url', '')[:60]}`")
+        for s in sorted(results["secrets"], key=secret_sort_key)[:5]:
+            conf = s.get("confidence", "?")
+            lines.append(f"• `{s.get('pattern', '')}` ({conf}) in `{s.get('url', '')[:60]}`")
         attachments.append(
             {
                 "color": "#f85149",

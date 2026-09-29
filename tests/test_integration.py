@@ -182,6 +182,7 @@ def _args(tmp_path: Path, **kw) -> argparse.Namespace:
         sources=None,
         monitor=False,
         keep=30,
+        secrets_min_confidence="low",
         no_html=True,
         no_plugins=True,
     )

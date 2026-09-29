@@ -17,7 +17,7 @@ from .modules.cors import check_cors_reflection
 from .modules.headers_audit import audit_headers
 from .modules.http_probe import probe_targets
 from .modules.nuclei import nuclei_available, run_nuclei
-from .modules.secrets import scan_secrets
+from .modules.secrets import CONFIDENCE_ORDER, filter_by_confidence, scan_secrets
 from .modules.subdomains import SOURCES, enumerate_subdomains, hosts_from_urls
 from .modules.wayback import fetch_wayback_urls
 from .monitor import DEFAULT_KEEP, alert_items, latest_snapshot, save_snapshot
@@ -88,6 +88,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_KEEP,
         help=f"Snapshots to keep per target in monitor mode (default {DEFAULT_KEEP}, 0 = all)",
+    )
+    p.add_argument(
+        "--secrets-min-confidence",
+        choices=list(CONFIDENCE_ORDER),
+        default="low",
+        help="Drop secret findings below this confidence (default: low = keep all)",
     )
     p.add_argument("--diff", help="Path to baseline results.json — emit delta report")
     p.add_argument(
@@ -234,8 +240,18 @@ async def run_one(
 
     if "secrets" not in skip and results["urls"]:
         with console.status("[bold green]Scanning JS files for secrets..."):
-            results["secrets"] = await scan_secrets(results["urls"], scope=scope, limiter=limiter)
-        console.print(f"  [green]✓[/green] {len(results['secrets'])} potential secrets")
+            found = await scan_secrets(results["urls"], scope=scope, limiter=limiter)
+        results["secrets"] = filter_by_confidence(found, cfg.secrets_min_confidence)
+        by_conf = {
+            c: sum(1 for s in results["secrets"] if s["confidence"] == c) for c in CONFIDENCE_ORDER
+        }
+        hidden = len(found) - len(results["secrets"])
+        console.print(
+            f"  [green]✓[/green] {len(results['secrets'])} potential secrets "
+            f"(high={by_conf['high']} medium={by_conf['medium']} low={by_conf['low']}"
+            + (f", {hidden} below --secrets-min-confidence" if hidden else "")
+            + ")"
+        )
 
     if active and results["alive"]:
         with console.status("[bold yellow]Testing CORS reflection (active)..."):
@@ -369,6 +385,7 @@ async def run_batch(
     sources: list[str] | None = None,
     monitor: bool = False,
     keep: int = DEFAULT_KEEP,
+    secrets_min_confidence: str | None = None,
 ) -> int:
     targets = load_batch(path)
     console.print(f"[bold]Loaded {len(targets)} target(s) from {path}[/bold]")
@@ -380,6 +397,8 @@ async def run_batch(
             cfg.rate = rate
         cfg.sources = cfg.sources or sources
         cfg.monitor = cfg.monitor or monitor
+        if secrets_min_confidence is not None:
+            cfg.secrets_min_confidence = secrets_min_confidence
         console.rule(f"[bold cyan]{cfg.domain}[/bold cyan]")
         try:
             await run_one(
@@ -453,6 +472,10 @@ async def run(args: argparse.Namespace) -> int:
             sources=sources,
             monitor=args.monitor,
             keep=args.keep,
+            # only override per-target settings when set explicitly on the CLI
+            secrets_min_confidence=(
+                args.secrets_min_confidence if args.secrets_min_confidence != "low" else None
+            ),
         )
 
     if not args.target or not args.output:
@@ -489,6 +512,7 @@ async def run(args: argparse.Namespace) -> int:
         rate=args.rate,
         sources=sources,
         monitor=args.monitor,
+        secrets_min_confidence=args.secrets_min_confidence,
     )
     results = await run_one(
         cfg,
