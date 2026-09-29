@@ -180,6 +180,8 @@ def _args(tmp_path: Path, **kw) -> argparse.Namespace:
         scope=None,
         rate=None,
         sources=None,
+        monitor=False,
+        keep=30,
         no_html=True,
         no_plugins=True,
     )

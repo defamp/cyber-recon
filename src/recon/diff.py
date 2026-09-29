@@ -28,7 +28,7 @@ def _sevs(items: list[dict]) -> dict[str, int]:
 
 def diff_results(baseline: dict, current: dict) -> dict[str, Any]:
     """Return the delta between two scan results."""
-    keys = ("subdomains", "alive", "urls", "secrets", "header_findings")
+    keys = ("subdomains", "alive", "urls", "secrets", "header_findings", "nuclei")
     added: dict[str, list] = {k: [] for k in keys}
     removed: dict[str, list] = {k: [] for k in keys}
     unchanged: dict[str, int] = {}
@@ -55,6 +55,10 @@ def diff_results(baseline: dict, current: dict) -> dict[str, Any]:
             if isinstance(it, dict):
                 if kind == "header_findings":
                     key = f"{it.get('host', '')}|{it.get('check', '')}|{it.get('detail', '')}"
+                elif kind == "nuclei":
+                    if it.get("_warning"):
+                        continue  # "binary not found" etc. is not a finding
+                    key = f"{it.get('template-id', '')}|{it.get('matched-at', '')}"
                 else:
                     key = it.get("url") or it.get("host")
                 if not key:

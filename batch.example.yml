@@ -4,6 +4,7 @@
 targets:
   - domain: example.com
     output: output/example
+    monitor: true           # keep history, alert only on new findings
     # passive only
 
   - domain: foo.example.com

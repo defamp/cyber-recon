@@ -18,6 +18,7 @@ class TargetConfig:
     scope: str | None = None  # path to a scope file (see recon.scope)
     rate: float | None = None  # max requests/second against the target
     sources: list[str] | None = None  # passive subdomain sources; None = all
+    monitor: bool = False  # keep history + alert only on new findings
 
     @classmethod
     def from_dict(cls, d: dict) -> "TargetConfig":
@@ -33,6 +34,7 @@ class TargetConfig:
             scope=d.get("scope"),
             rate=d.get("rate"),
             sources=d.get("sources"),
+            monitor=d.get("monitor", False),
         )
 
 

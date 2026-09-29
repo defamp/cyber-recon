@@ -20,7 +20,8 @@ from .modules.nuclei import nuclei_available, run_nuclei
 from .modules.secrets import scan_secrets
 from .modules.subdomains import SOURCES, enumerate_subdomains, hosts_from_urls
 from .modules.wayback import fetch_wayback_urls
-from .notify import notify_webhook, parse_webhook_target
+from .monitor import DEFAULT_KEEP, alert_items, latest_snapshot, save_snapshot
+from .notify import notify_alert, notify_webhook, parse_webhook_target
 from .plugins import discover as discover_user_plugins
 from .plugins import get_plugin, list_plugins, run_plugins
 from .ratelimit import RateLimiter
@@ -76,6 +77,18 @@ def parse_args() -> argparse.Namespace:
         help=f"Comma-separated passive subdomain sources (default: all of {','.join(SOURCES)}). "
         "Optional API keys: CERTSPOTTER_API_KEY, OTX_API_KEY, URLSCAN_API_KEY",
     )
+    p.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Keep scan history in <output>/history, diff against the previous scan and "
+        "only notify the webhook about new findings (run it from cron)",
+    )
+    p.add_argument(
+        "--keep",
+        type=int,
+        default=DEFAULT_KEEP,
+        help=f"Snapshots to keep per target in monitor mode (default {DEFAULT_KEEP}, 0 = all)",
+    )
     p.add_argument("--diff", help="Path to baseline results.json — emit delta report")
     p.add_argument(
         "--plugin",
@@ -113,10 +126,13 @@ async def run_one(
     enrich_cve: bool = False,
     plugin_names: list[str] | None = None,
     run_default_plugins: bool = True,
+    keep: int = DEFAULT_KEEP,
 ) -> dict:
     target = cfg.domain
     out_dir = Path(cfg.output)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Read the baseline before this scan overwrites results.json
+    previous = latest_snapshot(out_dir) if cfg.monitor else None
 
     active = cfg.active or extra_active
     nuclei = cfg.nuclei or extra_nuclei
@@ -287,6 +303,21 @@ async def run_one(
                 f"med={sev.get('medium', 0)} low={sev.get('low', 0)} info={sev.get('info', 0)}"
             )
 
+    alerts: dict[str, list[str]] = {}
+    if cfg.monitor:
+        if previous is None:
+            console.print("  [cyan]i[/cyan] monitor: first scan — saved as baseline")
+        else:
+            delta = diff_results(previous, results)
+            alerts = alert_items(delta)
+            (out_dir / "diff.json").write_text(json.dumps(delta, indent=2, default=str))
+            results["changes"] = {
+                "baseline_timestamp": previous.get("timestamp"),
+                "summary": delta["summary"],
+                "new": {k: len(v) for k, v in alerts.items()},
+            }
+            console.print(f"  [cyan]i[/cyan] monitor: {delta['summary']}")
+
     # Write artifacts
     json_path = out_dir / "results.json"
     json_path.write_text(json.dumps(results, indent=2, default=str))
@@ -299,11 +330,19 @@ async def run_one(
         write_html_report(results, html_path)
         console.print(f"[bold cyan]HTML:     [/bold cyan] {html_path}")
 
-    # Webhook notification
-    if webhook:
+    if cfg.monitor:
+        save_snapshot(out_dir, results, keep=keep)
+
+    # Webhook notification — in monitor mode only when something new showed up
+    if webhook and cfg.monitor and previous is not None and not alerts:
+        console.print("  [dim]nothing new — webhook not notified[/dim]")
+    elif webhook:
         platform, url = parse_webhook_target(webhook)
-        with console.status(f"[bold magenta]Posting summary to {platform} webhook..."):
-            ok = await notify_webhook(url, results, platform=platform)
+        with console.status(f"[bold magenta]Posting to {platform} webhook..."):
+            if alerts:
+                ok = await notify_alert(url, target, alerts, platform=platform)
+            else:
+                ok = await notify_webhook(url, results, platform=platform)
         if ok:
             console.print(f"  [green]✓[/green] notified {platform}")
         else:
@@ -328,6 +367,8 @@ async def run_batch(
     scope: str | None = None,
     rate: float | None = None,
     sources: list[str] | None = None,
+    monitor: bool = False,
+    keep: int = DEFAULT_KEEP,
 ) -> int:
     targets = load_batch(path)
     console.print(f"[bold]Loaded {len(targets)} target(s) from {path}[/bold]")
@@ -338,6 +379,7 @@ async def run_batch(
         if rate is not None:
             cfg.rate = rate
         cfg.sources = cfg.sources or sources
+        cfg.monitor = cfg.monitor or monitor
         console.rule(f"[bold cyan]{cfg.domain}[/bold cyan]")
         try:
             await run_one(
@@ -352,6 +394,7 @@ async def run_batch(
                 enrich_cve=enrich_cve,
                 plugin_names=plugin_names,
                 run_default_plugins=run_default_plugins,
+                keep=keep,
             )
         except Exception as exc:
             failures += 1
@@ -388,6 +431,10 @@ async def run(args: argparse.Namespace) -> int:
         console.print(f"[red]Unknown source(s) {unknown}; choose from {sorted(SOURCES)}[/red]")
         return 2
 
+    if args.keep < 0:
+        console.print("[red]--keep must be 0 (keep all) or a positive number[/red]")
+        return 2
+
     if args.batch:
         return await run_batch(
             Path(args.batch),
@@ -404,6 +451,8 @@ async def run(args: argparse.Namespace) -> int:
             scope=args.scope,
             rate=args.rate,
             sources=sources,
+            monitor=args.monitor,
+            keep=args.keep,
         )
 
     if not args.target or not args.output:
@@ -439,6 +488,7 @@ async def run(args: argparse.Namespace) -> int:
         scope=args.scope,
         rate=args.rate,
         sources=sources,
+        monitor=args.monitor,
     )
     results = await run_one(
         cfg,
@@ -450,6 +500,7 @@ async def run(args: argparse.Namespace) -> int:
         enrich_cve=args.enrich_cve,
         plugin_names=args.plugin,
         run_default_plugins=not args.no_plugins,
+        keep=args.keep,
     )
 
     # Diff mode

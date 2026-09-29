@@ -115,6 +115,38 @@ python3 -m recon.cli --target example.com --output output/example
 python3 -m recon.cli --target example.com --output output/example --diff output/example/results.json
 ```
 
+### Continuous monitoring
+
+`--monitor` turns each run into one step of a watch loop:
+
+- every scan is kept in `<output>/history/` (newest `--keep N`, default 30; `0` = all)
+- the scan is diffed against the previous one → `diff.json`, plus a
+  `changes` summary inside `results.json`
+- the webhook only fires when something **new** appears: subdomains, live
+  hosts, secrets, header issues (low and above), Nuclei findings, CORS
+  reflection. Removals and new Wayback URLs are recorded in `diff.json`
+  but do not alert. The first scan just sets the baseline and sends the
+  normal summary.
+- an existing `results.json` from before monitoring is used as the first baseline
+
+Scheduling is left to cron (or a systemd timer / CI schedule), so a crash or
+reboot never leaves a stuck daemon:
+
+```bash
+#!/bin/sh
+# /opt/cyber-recon/monitor.sh
+cd /opt/cyber-recon || exit 1
+PYTHONPATH=src exec python3 -m recon.cli --batch targets.yml --monitor \
+  --webhook "discord:https://discord.com/api/webhooks/..."
+```
+
+```cron
+# every 6 hours (cron entries must stay on one line)
+0 */6 * * * /opt/cyber-recon/monitor.sh >> /var/log/cyber-recon.log 2>&1
+```
+
+In batch files, `monitor: true` can also be set per target.
+
 ### Batch mode
 
 ```yaml
@@ -238,6 +270,7 @@ src/recon/
 ├── cli.py                    # entry point + orchestration
 ├── batch.py                  # YAML multi-target loader
 ├── notify.py                 # Slack/Discord webhook payloads
+├── monitor.py                # scan history + new-finding alerts
 ├── plugins.py                # plugin registry + auto-discovery
 ├── diff.py                   # scan-vs-scan delta computation
 ├── scope.py                  # scope file parsing + host matching
