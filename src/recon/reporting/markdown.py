@@ -3,6 +3,56 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..modules.headers_audit import finding_sort_key
+from ..modules.secrets import secret_sort_key
+
+
+def scope_summary(results: dict) -> str:
+    """One-line scope/rate description, or "" for older results without scope data."""
+    scope = results.get("scope")
+    if not scope:
+        return ""
+    oos = results.get("out_of_scope") or {}
+    parts = [f"Scope: {scope.get('source', 'default')}"]
+    if oos.get("subdomains"):
+        parts.append(f"{len(oos['subdomains'])} out-of-scope subdomain(s) not probed")
+    if oos.get("urls"):
+        parts.append(f"{oos['urls']} out-of-scope URL(s) dropped")
+    if scope.get("rate_limit"):
+        parts.append(f"rate limit {scope['rate_limit']:g} req/s")
+    return " · ".join(parts)
+
+
+def source_summary(results: dict) -> str:
+    """ "crtsh=12, otx=3, …" — hosts each passive source contributed (before scope)."""
+    stats = results.get("subdomain_sources") or {}
+    return ", ".join(f"{name}={count}" for name, count in stats.items())
+
+
+PRIORITY_TOP = 15
+
+
+def _findings_table(lines: list[str], title: str, findings: list[dict]) -> None:
+    lines.append(f"## {title} ({len(findings)})\n")
+    if not findings:
+        lines.append("_none_")
+        return
+    lines.append("| Severity | Host | Check | Detail |")
+    lines.append("|----------|------|-------|--------|")
+    for f in sorted(findings, key=finding_sort_key):
+        lines.append(
+            "| {sev} | {host} | {check} | {detail} |".format(
+                sev=f.get("severity", ""),
+                host=f.get("host", ""),
+                check=f.get("check", ""),
+                detail=(f.get("detail") or "").replace("|", "\\|"),
+            )
+        )
+
+
+def top_priorities(results: dict, n: int = PRIORITY_TOP) -> list[dict]:
+    return [p for p in results.get("priority") or [] if p.get("score", 0) > 0][:n]
+
 
 def write_markdown_report(results: dict, path: Path) -> None:
     target = results.get("target", "?")
@@ -11,6 +61,9 @@ def write_markdown_report(results: dict, path: Path) -> None:
     lines: list[str] = []
     lines.append(f"# Recon Report — `{target}`\n")
     lines.append(f"_Generated: {now}_\n")
+    scope_line = scope_summary(results)
+    if scope_line:
+        lines.append(f"_{scope_line}_\n")
 
     errors = results.get("errors") or []
     if errors:
@@ -19,8 +72,23 @@ def write_markdown_report(results: dict, path: Path) -> None:
         lines.extend(f"- {e}" for e in errors)
         lines.append("")
 
+    top = top_priorities(results)
+    if top:
+        lines.append("## Where to look first\n")
+        lines.append("_Heuristic ranking of live hosts — a starting point, not a severity._\n")
+        lines.append("| Score | Host | Why |")
+        lines.append("|------:|------|-----|")
+        for p in top:
+            lines.append(
+                f"| {p['score']} | {p.get('url') or p['host']} | {'; '.join(p['reasons'])} |"
+            )
+        lines.append("")
+
     subdomains = results.get("subdomains", [])
     lines.append(f"## Subdomains ({len(subdomains)})\n")
+    by_source = source_summary(results)
+    if by_source:
+        lines.append(f"_Per source: {by_source}_\n")
     if subdomains:
         lines.extend(f"- `{s}`" for s in subdomains)
     else:
@@ -59,17 +127,24 @@ def write_markdown_report(results: dict, path: Path) -> None:
     secrets = results.get("secrets", [])
     lines.append(f"## Potential secrets ({len(secrets)})\n")
     if secrets:
-        lines.append("| Source | Pattern | Match |")
-        lines.append("|--------|---------|-------|")
-        for s in secrets:
+        lines.append("| Confidence | Source | Pattern | Match | Why |")
+        lines.append("|------------|--------|---------|-------|-----|")
+        for s in sorted(secrets, key=secret_sort_key):
             lines.append(
-                "| {url} | {pat} | `{m}` |".format(
+                "| {conf} | {url} | {pat} | `{m}` | {why} |".format(
+                    conf=s.get("confidence") or "—",
                     url=s.get("url", ""),
                     pat=s.get("pattern", ""),
                     m=(s.get("match") or "")[:80],
+                    why=(s.get("reason") or "").replace("|", "\\|"),
                 )
             )
     else:
         lines.append("_none_")
+    lines.append("")
+
+    _findings_table(lines, "Security headers", results.get("header_findings") or [])
+    lines.append("")
+    _findings_table(lines, "TLS certificates", results.get("tls_findings") or [])
 
     path.write_text("\n".join(lines) + "\n")

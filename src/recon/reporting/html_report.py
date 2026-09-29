@@ -4,6 +4,10 @@ import html
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..modules.headers_audit import finding_sort_key
+from ..modules.secrets import secret_sort_key
+from .markdown import scope_summary, source_summary, top_priorities
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -88,17 +92,20 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
 <header>
   <div>
     <h1>Recon Report — <span style="color:var(--accent)">{target}</span></h1>
-    <div class="meta">Generated {timestamp} &middot; cyber-recon v0.1.0 &middot; {mode}</div>
+    <div class="meta">Generated {timestamp} &middot; cyber-recon v0.1.0 &middot; {mode}{scope_html}</div>
   </div>
   <input type="search" id="globalSearch" class="search-input" placeholder="Search report (URL, host, secret, finding)…">
 </header>
 {errors_html}
+{priority_html}
 <section class="summary">
   <div class="stat" data-jump="live-hosts"><div class="stat-num">{n_alive}</div><div class="stat-label">Live hosts</div></div>
   <div class="stat" data-jump="subdomains"><div class="stat-num">{n_subs}</div><div class="stat-label">Subdomains</div></div>
   <div class="stat" data-jump="cors"><div class="stat-num" style="color:{cors_color}">{n_cors_issues}</div><div class="stat-label">CORS issues</div></div>
   <div class="stat" data-jump="urls"><div class="stat-num">{n_urls}</div><div class="stat-label">Historical URLs</div></div>
   <div class="stat" data-jump="secrets"><div class="stat-num" style="color:{secrets_color}">{n_secrets}</div><div class="stat-label">Potential secrets</div></div>
+  <div class="stat" data-jump="headers"><div class="stat-num" style="color:{headers_color}">{n_header_issues}</div><div class="stat-label">Header issues</div></div>
+  <div class="stat" data-jump="tls"><div class="stat-num" style="color:{tls_color}">{n_tls_issues}</div><div class="stat-label">TLS issues</div></div>
   <div class="stat" data-jump="nuclei"><div class="stat-num" style="color:{nuclei_color}">{n_nuclei}</div><div class="stat-label">Nuclei hits</div></div>
 </section>
 
@@ -106,7 +113,7 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
 {hosts_html}
 
 <h2 id="subdomains">Subdomains <span class="section-count">({n_subs})</span></h2>
-{subs_html}
+{sources_html}{subs_html}
 
 <h2 id="cors">CORS analysis <span class="section-count">({n_cors_issues} issues)</span></h2>
 {cors_html}
@@ -116,6 +123,12 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
 
 <h2 id="secrets">Potential secrets <span class="section-count">({n_secrets})</span></h2>
 {secrets_html}
+
+<h2 id="headers">Security headers <span class="section-count">({n_headers} findings)</span></h2>
+{headers_html}
+
+<h2 id="tls">TLS certificates <span class="section-count">({n_tls} findings)</span></h2>
+{tls_html}
 
 <h2 id="nuclei">Nuclei findings <span class="section-count">({n_nuclei})</span></h2>
 {nuclei_html}
@@ -306,19 +319,71 @@ def _render_secrets(secrets: list[dict]) -> str:
     if not secrets:
         return '<p class="empty">No potential secrets detected in JS files.</p>'
     rows = [
-        "<table><thead><tr><th>Pattern</th><th>Source URL</th><th>Match</th><th></th></tr></thead><tbody>"
+        "<table><thead><tr><th>Confidence</th><th>Pattern</th><th>Source URL</th><th>Match</th><th></th></tr></thead><tbody>"
     ]
-    for s in secrets:
+    for s in sorted(secrets, key=secret_sort_key):
         match = s.get("match") or ""
         url = s.get("url") or ""
         pattern = s.get("pattern") or ""
-        searchable = f"{pattern} {url} {match}"
+        confidence = s.get("confidence") or "—"
+        reason = s.get("reason") or ""
+        sev_cls = {"high": "sev-critical", "medium": "sev-medium", "low": "sev-low"}.get(
+            confidence, "sev-info"
+        )
+        searchable = f"{confidence} {pattern} {url} {match} {reason}"
         rows.append(
             f'<tr class="secret-row" data-searchable="{_esc_attr(searchable)}">'
+            f'<td><span class="{sev_cls}" title="{_esc_attr(reason)}">{html.escape(confidence.upper())}</span></td>'
             f"<td>{html.escape(pattern)}</td>"
             f'<td><a class="host-url" href="{html.escape(url)}" target="_blank">{html.escape(url[:80])}{"…" if len(url) > 80 else ""}</a></td>'
             f'<td><code class="secret-match">{html.escape(match[:100])}</code></td>'
             f'<td><button class="copy-btn" data-copy="{_esc_attr(match)}">copy</button></td></tr>'
+        )
+    rows.append("</tbody></table>")
+    return "\n".join(rows)
+
+
+def _render_priority(top: list[dict]) -> str:
+    if not top:
+        return ""
+    rows = [
+        '<h2 id="priority">Where to look first <span class="section-count">(heuristic)</span></h2>',
+        "<table><thead><tr><th>Score</th><th>Host</th><th>Why</th></tr></thead><tbody>",
+    ]
+    for p in top:
+        url = p.get("url") or ""
+        why = "; ".join(p.get("reasons") or [])
+        rows.append(
+            f'<tr data-searchable="{_esc_attr(p.get("host", "") + " " + why)}">'
+            f'<td style="font-weight:700;color:var(--purple)">{int(p.get("score", 0))}</td>'
+            f'<td><a class="host-url" href="{html.escape(url)}" target="_blank">{html.escape(p.get("host", ""))}</a></td>'
+            f'<td class="meta">{html.escape(why)}</td></tr>'
+        )
+    rows.append("</tbody></table>")
+    return "\n".join(rows)
+
+
+def _render_headers(
+    findings: list[dict], empty: str = "No header findings (audit skipped or no live hosts)."
+) -> str:
+    if not findings:
+        return f'<p class="empty">{html.escape(empty)}</p>'
+    rows = [
+        "<table><thead><tr><th>Severity</th><th>Host</th><th>Check</th><th>Detail</th></tr></thead><tbody>"
+    ]
+    for f in sorted(findings, key=finding_sort_key):
+        sev = (f.get("severity") or "info").lower()
+        host = f.get("host", "")
+        url = f.get("url", "")
+        check = f.get("check", "")
+        detail = f.get("detail", "")
+        searchable = f"{host} {check} {detail} {sev}"
+        rows.append(
+            f'<tr data-searchable="{_esc_attr(searchable)}">'
+            f'<td><span class="sev-{html.escape(sev)}">{html.escape(sev.upper())}</span></td>'
+            f'<td><a class="host-url" href="{html.escape(url)}" target="_blank">{html.escape(host)}</a></td>'
+            f"<td><code>{html.escape(check)}</code></td>"
+            f"<td>{html.escape(detail)}</td></tr>"
         )
     rows.append("</tbody></table>")
     return "\n".join(rows)
@@ -374,6 +439,13 @@ def write_html_report(results: dict, path: Path) -> None:
     secrets = results.get("secrets", [])
     nuclei = results.get("nuclei", [])
     reflective = results.get("cors_reflective", {})
+    header_findings = results.get("header_findings", [])
+    # Info-level findings (missing Referrer-Policy etc.) would drown the stat card
+    n_header_issues = sum(1 for f in header_findings if f.get("severity") != "info")
+    headers_color = "var(--yellow)" if n_header_issues > 0 else "var(--green)"
+    tls_findings = results.get("tls_findings") or []
+    n_tls_issues = sum(1 for f in tls_findings if f.get("severity") != "info")
+    tls_color = "var(--yellow)" if n_tls_issues > 0 else "var(--green)"
 
     n_cors = len(_cors_issues(hosts, reflective))
 
@@ -412,7 +484,26 @@ def write_html_report(results: dict, path: Path) -> None:
         urls_html=_render_urls(urls),
         secrets_html=_render_secrets(secrets),
         nuclei_html=_render_nuclei(nuclei),
+        n_headers=len(header_findings),
+        n_header_issues=n_header_issues,
+        headers_color=headers_color,
+        headers_html=_render_headers(header_findings),
+        n_tls=len(tls_findings),
+        n_tls_issues=n_tls_issues,
+        tls_color=tls_color,
+        tls_html=_render_headers(
+            tls_findings, empty="No TLS findings (check skipped, no HTTPS hosts, or all valid)."
+        ),
+        priority_html=_render_priority(top_priorities(results)),
         errors_html=_render_errors(results.get("errors") or []),
         mode="active modules enabled" if results.get("active") else "passive only",
+        sources_html=(
+            f'<p class="meta">Per source: {html.escape(source_summary(results))}</p>'
+            if source_summary(results)
+            else ""
+        ),
+        scope_html=(
+            f" &middot; {html.escape(scope_summary(results))}" if scope_summary(results) else ""
+        ),
     )
     path.write_text(html_out)

@@ -4,6 +4,7 @@
 targets:
   - domain: example.com
     output: output/example
+    monitor: true           # keep history, alert only on new findings
     # passive only
 
   - domain: foo.example.com
@@ -13,6 +14,8 @@ targets:
 
   - domain: bar.example.com
     output: output/bar
+    scope: scope.example.txt   # only probe hosts allowed by the program
+    rate: 5                    # max requests/second against the target
     active: true
     nuclei: true            # requires nuclei binary in PATH
     notify:

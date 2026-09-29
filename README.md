@@ -15,11 +15,14 @@ Single CLI that runs a coordinated recon sweep against a target domain, with
 
 | Module | What it finds | Active? |
 |---|---|---|
-| Subdomain enum | crt.sh + HackerTarget passive aggregation | passive |
+| Subdomain enum | crt.sh, HackerTarget, CertSpotter, AlienVault OTX, urlscan.io + hosts seen in Wayback URLs | passive |
 | HTTP probe | DNS resolve, status, server, title, tech fingerprint | passive |
+| Security headers | HSTS, CSP (unsafe-inline/eval, wildcard), clickjacking, nosniff, Referrer-Policy, version disclosure, cookie flags — from headers already fetched by the probe | passive (`--no-headers` to skip) |
+| TLS certificates | One verified handshake per HTTPS host: expired, self-signed, hostname mismatch, untrusted chain, expiring < 14 days; TLS 1.0/1.1 acceptance with `--active` | handshake only (`--no-tls` to skip) |
+| Priority score | Ranks live hosts by secrets, Nuclei, CORS, header/TLS issues, interesting names/titles, auth walls, new-since-last-scan | no requests |
 | CORS reflection | Sends random Origin header, detects arbitrary reflection | opt-in `--active` |
 | Wayback mining | Historical URLs from Wayback CDX | passive |
-| Secret scanner | Regex: AWS, GitHub, Slack, Google, Stripe, JWT, generic API keys in JS files | passive |
+| Secret scanner | Regex (AWS, GitHub, GitLab, npm, Slack, SendGrid, Google, Stripe, JWT, private keys, generic keys) in JS files, then triaged into high/medium/low confidence | passive |
 | Nuclei integration | Runs nuclei binary, parses JSON output | opt-in `--nuclei` |
 | CVE enrichment | Looks up CVE-tagged Nuclei findings against GitHub Advisory DB | opt-in `--enrich-cve` |
 | Plugins | Auto-loaded bundled + user-supplied transformers | optional |
@@ -55,6 +58,56 @@ PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example
   --nuclei --nuclei-tags cve,exposure --nuclei-templates http/cves/
 ```
 
+### Scope and rate limit
+
+Bug bounty programs define what you may touch and how fast. Give the program
+scope as a file and cyber-recon will only send requests to hosts inside it:
+
+```bash
+PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example \
+  --scope scope.example.txt --rate 5
+```
+
+- **Scope file**: YAML (`include:` / `exclude:` / `rate_limit:`) or plain text, one
+  entry per line with `!` for exclusions — see [`scope.example.txt`](scope.example.txt).
+  Entries are exact hosts, `*.wildcards` (subdomains only, not the apex) or
+  `re:` regexes. Exclusions always win.
+- Out-of-scope subdomains are never probed and out-of-scope Wayback URLs are
+  dropped before the JS fetch; both are recorded under `out_of_scope` in
+  `results.json`.
+- Redirects are followed manually and **stop at the first hop that leaves
+  scope**, so an SSO or third-party redirect is never requested.
+- Exact hosts in the scope file that belong to the target are probed even if
+  no passive source knows them.
+- `--rate N` paces every request to the target (probe, CORS, JS fetch) to N/s
+  and is passed to nuclei as `-rl`. Passive third-party sources (crt.sh,
+  HackerTarget, Wayback) are not paced by it.
+- Without `--scope`, the scope is the target domain and its subdomains — the
+  same hosts as before, but redirects off that domain are no longer followed.
+- In batch mode, `scope:` / `rate:` can be set per target; CLI `--scope` is the
+  fallback and CLI `--rate` overrides.
+
+### Subdomain sources
+
+All sources are passive third-party datasets and run in parallel; one failing
+source is reported under `errors` and does not stop the others. Per-source
+counts are stored in `results.json` → `subdomain_sources` and shown in the
+reports.
+
+| Source | Name for `--sources` | Optional API key (env var) |
+|---|---|---|
+| crt.sh | `crtsh` | — |
+| HackerTarget | `hackertarget` | — |
+| CertSpotter (first page of issuances) | `certspotter` | `CERTSPOTTER_API_KEY` |
+| AlienVault OTX passive DNS | `otx` | `OTX_API_KEY` |
+| urlscan.io search (100 results) | `urlscan` | `URLSCAN_API_KEY` |
+
+Hosts found in Wayback URLs are also added before probing (no extra request).
+Pick sources with `--sources crtsh,certspotter` or `sources: [...]` per batch
+target. Without keys the free quotas are small; an HTTP 429 is reported with
+a hint to set one. Quotas and response formats of these third-party APIs
+change over time — check each provider's current terms.
+
 ### Diff vs baseline scan
 
 ```bash
@@ -63,6 +116,87 @@ python3 -m recon.cli --target example.com --output output/example
 # Later — show delta vs prior results.json
 python3 -m recon.cli --target example.com --output output/example --diff output/example/results.json
 ```
+
+### Where to look first (priority score)
+
+Every live host gets a score — a plain sum of weighted signals, each listed
+with its points so the ranking can be checked at a glance. The top 15 open
+both reports; the full list is in `results.json` → `priority`.
+
+| Signal | Points |
+|---|---|
+| secret on the host (high / medium / low confidence) | 40 / 15 / 3 |
+| Nuclei finding (critical / high / medium / low) | 50 / 30 / 12 / 4 |
+| reflects arbitrary Origin (+ credentials) | 25 (+15) |
+| header/TLS findings (medium 8, low 3 each) | capped at 15 |
+| name or title keyword (`admin`, `jenkins`, `staging`, `api`, `swagger`, …; whole words) | 8 each, max 16 |
+| 401/403 · 5xx | 5 · 3 |
+| new since the last scan (`--monitor`) | 15 |
+
+The weights are judgment calls, not calibrated on data: use the ranking to
+decide what to open first, never as a severity.
+
+### TLS certificate check
+
+One handshake per HTTPS live host, verified against the system CA store the
+way a browser would. OpenSSL's failure reason becomes the finding
+(`cert-expired` medium; `cert-self-signed`, `cert-hostname-mismatch`,
+`cert-untrusted` low); valid certificates record protocol, issuer and days
+left, with an info finding under 14 days. With `--active`, one extra
+handshake per host checks whether TLS 1.0/1.1 is still accepted; if the local
+OpenSSL cannot offer those versions the result is `untestable`, not
+"rejected". Handshakes honour `--rate`, and connection errors are recorded on
+the host, not reported as findings. On a machine without a CA bundle every
+host shows up as `cert-untrusted` — install your OS's `ca-certificates`.
+
+### Secret triage
+
+Every regex hit is classified before it reaches the report:
+
+| Result | When |
+|---|---|
+| dropped | placeholders and doc examples (`EXAMPLE`, `xxxx`, `your_…`, `dummy`, runs like `000000`), generic `api_key = "…"` values that are not random-looking (need letters + digits and ≥ 3.5 bits/char entropy), strings that look like JWTs but do not decode |
+| **high** | provider-specific formats (AWS `AKIA…`, `ghp_`/`github_pat_`, `glpat-`, `npm_`, Slack tokens/webhooks, SendGrid, private key blocks), Stripe live keys, AWS secrets next to their variable name |
+| **medium** | Google `AIza…` keys (often public by design — check restrictions), random-looking generic keys |
+| **low** | Stripe test keys, decodable JWTs (often public/anon tokens) |
+
+Each finding carries `confidence` and `reason`; reports sort by confidence
+and the same match is reported once per file. `--secrets-min-confidence medium`
+(or `secrets_min_confidence:` per batch target) drops the rest, and monitor
+alerts never fire for low-confidence secrets. A confidence is a triage hint,
+not proof: verify a key's validity and scope before reporting it.
+
+### Continuous monitoring
+
+`--monitor` turns each run into one step of a watch loop:
+
+- every scan is kept in `<output>/history/` (newest `--keep N`, default 30; `0` = all)
+- the scan is diffed against the previous one → `diff.json`, plus a
+  `changes` summary inside `results.json`
+- the webhook only fires when something **new** appears: subdomains, live
+  hosts, secrets, header issues (low and above), Nuclei findings, CORS
+  reflection. Removals and new Wayback URLs are recorded in `diff.json`
+  but do not alert. The first scan just sets the baseline and sends the
+  normal summary.
+- an existing `results.json` from before monitoring is used as the first baseline
+
+Scheduling is left to cron (or a systemd timer / CI schedule), so a crash or
+reboot never leaves a stuck daemon:
+
+```bash
+#!/bin/sh
+# /opt/cyber-recon/monitor.sh
+cd /opt/cyber-recon || exit 1
+PYTHONPATH=src exec python3 -m recon.cli --batch targets.yml --monitor \
+  --webhook "discord:https://discord.com/api/webhooks/..."
+```
+
+```cron
+# every 6 hours (cron entries must stay on one line)
+0 */6 * * * /opt/cyber-recon/monitor.sh >> /var/log/cyber-recon.log 2>&1
+```
+
+In batch files, `monitor: true` can also be set per target.
 
 ### Batch mode
 
@@ -140,6 +274,15 @@ The HTML report supports:
 - Click stat cards to jump to sections
 - Severity color coding (critical=red, high=orange, medium=yellow)
 
+### Security header audit
+
+Runs automatically on every live host and adds no extra requests: it reuses the
+headers from the HTTP probe (final response after redirects). Findings are
+rated `low` or `info` only — most programs treat missing headers as
+informative, so use them for hardening reports rather than as standalone bugs.
+Hosts answering 5xx are skipped. The `header_findings` collection is included
+in `--diff` output, keyed by host + check.
+
 ## Development
 
 ### Run tests
@@ -178,14 +321,20 @@ src/recon/
 ├── cli.py                    # entry point + orchestration
 ├── batch.py                  # YAML multi-target loader
 ├── notify.py                 # Slack/Discord webhook payloads
+├── monitor.py                # scan history + new-finding alerts
+├── priority.py               # where-to-look-first host ranking
 ├── plugins.py                # plugin registry + auto-discovery
 ├── diff.py                   # scan-vs-scan delta computation
+├── scope.py                  # scope file parsing + host matching
+├── ratelimit.py              # request pacing + scope-aware redirects
 ├── live_table.py             # rich live table for Nuclei findings
 ├── bundled_plugins/          # plugins shipped with the tool
 │   └── severity.py           # (tally severities — active by default)
 ├── modules/
-│   ├── subdomains.py         # crt.sh + HackerTarget
+│   ├── subdomains.py         # passive sources: crt.sh, HackerTarget, CertSpotter, OTX, urlscan
 │   ├── http_probe.py         # DNS + HTTP probe + tech fingerprint
+│   ├── headers_audit.py      # security header + cookie flag audit
+│   ├── tls.py                # certificate verification + legacy TLS check
 │   ├── cors.py               # Origin reflection test
 │   ├── wayback.py            # CDX endpoint discovery
 │   ├── secrets.py            # regex secret scanner

@@ -6,6 +6,9 @@ We use the most-compatible subset.
 
 import aiohttp
 
+from .modules.secrets import secret_sort_key
+from .monitor import format_alert
+
 TIMEOUT = 10
 
 
@@ -49,8 +52,9 @@ def _build_slack_payload(results: dict, *, include_findings: bool = True) -> dic
     if include_findings and results.get("secrets"):
         # add top secrets as text
         lines = ["*Top potential secrets:*"]
-        for s in results["secrets"][:5]:
-            lines.append(f"• `{s.get('pattern', '')}` in `{s.get('url', '')[:60]}`")
+        for s in sorted(results["secrets"], key=secret_sort_key)[:5]:
+            conf = s.get("confidence", "?")
+            lines.append(f"• `{s.get('pattern', '')}` ({conf}) in `{s.get('url', '')[:60]}`")
         attachments.append(
             {
                 "color": "#f85149",
@@ -89,6 +93,28 @@ def _build_discord_payload(results: dict) -> dict:
     }
 
 
+DISCORD_CONTENT_LIMIT = 2000  # Discord rejects longer message content
+
+
+def _build_alert_payload(target: str, alerts: dict[str, list[str]], platform: str) -> dict:
+    body = format_alert(target, alerts)
+    if platform == "discord":
+        if len(body) > DISCORD_CONTENT_LIMIT:
+            body = body[: DISCORD_CONTENT_LIMIT - 20] + "\n… (see diff.json)"
+        return {"content": body}
+    return {"text": f":rotating_light: {body}"}
+
+
+async def notify_alert(
+    url: str, target: str, alerts: dict[str, list[str]], *, platform: str = "slack"
+) -> bool:
+    """Post a "new since last scan" alert. Returns True on 2xx."""
+    if not url:
+        return False
+    platform = (platform or "slack").lower()
+    return await _post(url, _build_alert_payload(target, alerts, platform))
+
+
 async def notify_webhook(url: str, results: dict, *, platform: str = "slack") -> bool:
     """Post results to a webhook. Returns True on 2xx."""
     if not url:
@@ -98,7 +124,10 @@ async def notify_webhook(url: str, results: dict, *, platform: str = "slack") ->
         payload = _build_discord_payload(results)
     else:
         payload = _build_slack_payload(results)
+    return await _post(url, payload)
 
+
+async def _post(url: str, payload: dict) -> bool:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(

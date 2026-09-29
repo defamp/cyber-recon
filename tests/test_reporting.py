@@ -153,3 +153,11 @@ def test_html_report_cors_reflective_issue(tmp_path: Path):
     write_html_report(res, out)
     content = out.read_text()
     assert "Reflects arbitrary Origin" in content
+
+
+def test_reports_show_subdomain_sources(tmp_path: Path):
+    results = {**_fake_results(), "subdomain_sources": {"crtsh": 2, "otx": 1}}
+    write_markdown_report(results, tmp_path / "r.md")
+    write_html_report(results, tmp_path / "r.html")
+    assert "_Per source: crtsh=2, otx=1_" in (tmp_path / "r.md").read_text()
+    assert "Per source: crtsh=2, otx=1" in (tmp_path / "r.html").read_text()

@@ -127,6 +127,7 @@ async def test_run_one_records_source_errors(tmp_path: Path, fake_http):
         }
     )
     cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["http", "secrets"])
+    cfg.sources = ["crtsh", "hackertarget"]
     result = await run_one(cfg, no_html=False)
     assert result["errors"] == [
         "crt.sh: http 502",
@@ -149,6 +150,7 @@ async def test_run_one_no_errors_on_success(tmp_path: Path, fake_http):
         }
     )
     cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["http", "secrets"])
+    cfg.sources = ["crtsh", "hackertarget"]
     result = await run_one(cfg, no_html=True)
     assert result["errors"] == []
     assert result["subdomains"] == ["a.x.com", "b.x.com", "c.x.com"]
@@ -174,6 +176,14 @@ def _args(tmp_path: Path, **kw) -> argparse.Namespace:
         no_subdomains=True,
         no_wayback=True,
         no_secrets=True,
+        no_headers=True,
+        no_tls=True,
+        scope=None,
+        rate=None,
+        sources=None,
+        monitor=False,
+        keep=30,
+        secrets_min_confidence="low",
         no_html=True,
         no_plugins=True,
     )
@@ -242,3 +252,45 @@ async def test_html_header_reflects_scan_mode(tmp_path: Path):
     await run_one(cfg, no_html=False)
     assert "passive only" in (tmp_path / "p" / "report.html").read_text()
     assert "active modules enabled" in (tmp_path / "a" / "report.html").read_text()
+
+
+@pytest.mark.asyncio
+async def test_wayback_hosts_are_added_before_probing(tmp_path: Path, monkeypatch):
+    probed = []
+
+    async def fake_subs(domain, errors, **kw):
+        kw["stats"].update(crtsh=1)
+        return ["a.x.com"]
+
+    async def fake_wayback(domain, errors):
+        return ["https://a.x.com/1", "https://old.x.com/app.js"]
+
+    async def fake_probe(hosts, **_):
+        probed.extend(hosts)
+        return []
+
+    monkeypatch.setattr("recon.cli.enumerate_subdomains", fake_subs)
+    monkeypatch.setattr("recon.cli.fetch_wayback_urls", fake_wayback)
+    monkeypatch.setattr("recon.cli.probe_targets", fake_probe)
+    cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["secrets"])
+    result = await run_one(cfg, no_html=True)
+    assert probed == ["a.x.com", "old.x.com"]
+    assert result["subdomain_sources"] == {"crtsh": 1, "wayback": 1}
+
+
+@pytest.mark.asyncio
+async def test_wayback_hosts_not_added_when_subdomains_skipped(tmp_path: Path, monkeypatch):
+    async def fake_wayback(domain, errors):
+        return ["https://old.x.com/app.js"]
+
+    monkeypatch.setattr("recon.cli.fetch_wayback_urls", fake_wayback)
+    cfg = _cfg(target="x.com", output=str(tmp_path / "x"), skip=["subdomains", "http", "secrets"])
+    result = await run_one(cfg, no_html=True)
+    assert result["subdomains"] == []
+
+
+@pytest.mark.asyncio
+async def test_cli_rejects_unknown_source(tmp_path: Path, fake_http):
+    fake = fake_http({})
+    assert await run(_args(tmp_path, sources="crtsh,nope")) == 2
+    assert fake.urls == []

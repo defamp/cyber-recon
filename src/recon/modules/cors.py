@@ -10,6 +10,8 @@ import string
 
 import aiohttp
 
+from ..ratelimit import RateLimiter
+
 PROBE_ORIGINS = [
     "https://evil.example",
     "https://attacker.test",
@@ -27,10 +29,15 @@ def _rand_origin() -> str:
 
 
 async def _test_origin(
-    session: aiohttp.ClientSession, url: str, origin: str
+    session: aiohttp.ClientSession,
+    url: str,
+    origin: str,
+    limiter: RateLimiter | None = None,
 ) -> tuple[str, str, str, bool]:
     """Returns (origin, acao_header, acac_header, reflects_origin)."""
     try:
+        if limiter:
+            await limiter.wait()
         async with session.get(
             url,
             headers={"Origin": origin},
@@ -46,7 +53,9 @@ async def _test_origin(
         return (origin, "", "", False)
 
 
-async def check_cors_reflection(hosts: list[dict]) -> dict[str, dict]:
+async def check_cors_reflection(
+    hosts: list[dict], *, limiter: RateLimiter | None = None
+) -> dict[str, dict]:
     """For each live host, test if it reflects arbitrary Origin.
 
     Returns: {host: {"reflects": bool, "acao": str, "acac": str, "tested_origin": str}}
@@ -67,7 +76,7 @@ async def check_cors_reflection(hosts: list[dict]) -> dict[str, dict]:
             }
         origin = _rand_origin()
         async with sem:
-            tested, acao, acac, reflects = await _test_origin(session, url, origin)
+            tested, acao, acac, reflects = await _test_origin(session, url, origin, limiter)
         return h.get("host", ""), {
             "reflects": reflects,
             "acao": acao,

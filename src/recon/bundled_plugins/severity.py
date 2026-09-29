@@ -17,6 +17,11 @@ async def severity_counter(target, results, **_):
         sev = (f.get("info", {}) or {}).get("severity", "info") or "info"
         counts[sev.lower()] = counts.get(sev.lower(), 0) + 1
 
+    # Security header audit + TLS check
+    for f in (results.get("header_findings") or []) + (results.get("tls_findings") or []):
+        sev = (f.get("severity") or "info").lower()
+        counts[sev] = counts.get(sev, 0) + 1
+
     # CORS reflection issues
     for v in (results.get("cors_reflective") or {}).values():
         if v.get("reflects"):

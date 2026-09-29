@@ -14,16 +14,22 @@ from .diff import diff_results
 from .live_table import LiveNucleiTable
 from .modules.advisories import enrich_nuclei
 from .modules.cors import check_cors_reflection
+from .modules.headers_audit import audit_headers
 from .modules.http_probe import probe_targets
 from .modules.nuclei import nuclei_available, run_nuclei
-from .modules.secrets import scan_secrets
-from .modules.subdomains import enumerate_subdomains
+from .modules.secrets import CONFIDENCE_ORDER, filter_by_confidence, scan_secrets
+from .modules.subdomains import SOURCES, enumerate_subdomains, hosts_from_urls
+from .modules.tls import check_tls
 from .modules.wayback import fetch_wayback_urls
-from .notify import notify_webhook, parse_webhook_target
+from .monitor import DEFAULT_KEEP, alert_items, latest_snapshot, save_snapshot
+from .notify import notify_alert, notify_webhook, parse_webhook_target
 from .plugins import discover as discover_user_plugins
 from .plugins import get_plugin, list_plugins, run_plugins
+from .priority import score_hosts
+from .ratelimit import RateLimiter
 from .reporting.html_report import write_html_report
 from .reporting.markdown import write_markdown_report
+from .scope import Scope, load_scope, normalize_host
 
 console = Console()
 
@@ -58,6 +64,39 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enrich CVE-tagged Nuclei findings with GitHub advisory data",
     )
+    p.add_argument(
+        "--scope",
+        help="Scope file (YAML or one host/wildcard/re: per line, '!' = exclude). "
+        "Default: the target domain and its subdomains",
+    )
+    p.add_argument(
+        "--rate",
+        type=float,
+        help="Max requests/second against the target (overrides the scope file's rate_limit)",
+    )
+    p.add_argument(
+        "--sources",
+        help=f"Comma-separated passive subdomain sources (default: all of {','.join(SOURCES)}). "
+        "Optional API keys: CERTSPOTTER_API_KEY, OTX_API_KEY, URLSCAN_API_KEY",
+    )
+    p.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Keep scan history in <output>/history, diff against the previous scan and "
+        "only notify the webhook about new findings (run it from cron)",
+    )
+    p.add_argument(
+        "--keep",
+        type=int,
+        default=DEFAULT_KEEP,
+        help=f"Snapshots to keep per target in monitor mode (default {DEFAULT_KEEP}, 0 = all)",
+    )
+    p.add_argument(
+        "--secrets-min-confidence",
+        choices=list(CONFIDENCE_ORDER),
+        default="low",
+        help="Drop secret findings below this confidence (default: low = keep all)",
+    )
     p.add_argument("--diff", help="Path to baseline results.json — emit delta report")
     p.add_argument(
         "--plugin",
@@ -70,6 +109,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-subdomains", action="store_true")
     p.add_argument("--no-wayback", action="store_true")
     p.add_argument("--no-secrets", action="store_true")
+    p.add_argument(
+        "--no-headers", action="store_true", help="Skip the passive security header audit"
+    )
+    p.add_argument(
+        "--no-tls",
+        action="store_true",
+        help="Skip the TLS certificate check (one handshake per HTTPS host)",
+    )
     p.add_argument(
         "--no-html", action="store_true", help="Skip HTML report (still emits Markdown + JSON)"
     )
@@ -92,10 +139,13 @@ async def run_one(
     enrich_cve: bool = False,
     plugin_names: list[str] | None = None,
     run_default_plugins: bool = True,
+    keep: int = DEFAULT_KEEP,
 ) -> dict:
     target = cfg.domain
     out_dir = Path(cfg.output)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Read the baseline before this scan overwrites results.json
+    previous = latest_snapshot(out_dir) if cfg.monitor else None
 
     active = cfg.active or extra_active
     nuclei = cfg.nuclei or extra_nuclei
@@ -104,16 +154,34 @@ async def run_one(
     if skip:
         console.print(f"[dim]Skipping modules: {sorted(skip)}[/dim]")
 
+    scope = load_scope(Path(cfg.scope)) if cfg.scope else Scope.default_for(target)
+    rate = cfg.rate if cfg.rate is not None else scope.rate_limit
+    limiter = RateLimiter(rate)
+    if cfg.scope:
+        console.print(
+            f"[dim]Scope: {cfg.scope} — {len(scope.include)} include / "
+            f"{len(scope.exclude)} exclude rule(s)[/dim]"
+        )
+    if limiter.rate:
+        console.print(f"[dim]Rate limit: {limiter.rate:g} req/s against target[/dim]")
+
     results: dict = {
         "target": target,
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         "active": bool(active or nuclei),
         "subdomains": [],
+        "subdomain_sources": {},
         "alive": [],
         "urls": [],
         "secrets": [],
+        "header_findings": [],
+        "tls": [],
+        "tls_findings": [],
+        "priority": [],
         "nuclei": [],
         "cors_reflective": {},
+        "scope": {**scope.summary(), "rate_limit": limiter.rate},
+        "out_of_scope": {"subdomains": [], "urls": 0},
         "errors": [],
     }
     errors: list[str] = results["errors"]
@@ -124,17 +192,18 @@ async def run_one(
 
     if "subdomains" not in skip:
         n_err = len(errors)
+        stats: dict[str, int] = {}
         with console.status(f"[bold green]Enumerating subdomains for {target}..."):
-            results["subdomains"] = await enumerate_subdomains(target, errors)
+            results["subdomains"] = await enumerate_subdomains(
+                target, errors, sources=cfg.sources, stats=stats
+            )
+        results["subdomain_sources"] = stats
         mark = "[green]✓[/green]" if len(errors) == n_err else "[yellow]⚠[/yellow]"
-        console.print(f"  {mark} {len(results['subdomains'])} subdomains")
+        per_source = ", ".join(f"{k}={v}" for k, v in stats.items())
+        console.print(f"  {mark} {len(results['subdomains'])} subdomains ({per_source})")
         report_errors(n_err)
 
-    if results["subdomains"] and "http" not in skip:
-        with console.status("[bold green]Probing live hosts..."):
-            results["alive"] = await probe_targets(results["subdomains"])
-        console.print(f"  [green]✓[/green] {len(results['alive'])} live hosts")
-
+    # Wayback runs before probing so hosts it has seen get probed too
     if "wayback" not in skip:
         n_err = len(errors)
         with console.status("[bold green]Fetching Wayback URLs..."):
@@ -142,15 +211,75 @@ async def run_one(
         mark = "[green]✓[/green]" if len(errors) == n_err else "[yellow]⚠[/yellow]"
         console.print(f"  {mark} {len(results['urls'])} historical URLs")
         report_errors(n_err)
+        if "subdomains" not in skip:
+            known = set(results["subdomains"])
+            extra = [h for h in hosts_from_urls(target, results["urls"]) if h not in known]
+            if extra:
+                results["subdomains"] = sorted(known | set(extra))
+                console.print(f"  [green]✓[/green] +{len(extra)} subdomains from Wayback URLs")
+            results["subdomain_sources"]["wayback"] = len(extra)
+        in_scope_urls = [u for u in results["urls"] if scope.url_in_scope(u)]
+        results["out_of_scope"]["urls"] = len(results["urls"]) - len(in_scope_urls)
+        results["urls"] = in_scope_urls
+
+    # Hosts listed literally in the scope file are worth probing even if no
+    # passive source knows them.
+    if cfg.scope:
+        apex = normalize_host(target)
+        own = [h for h in scope.exact_hosts() if h == apex or h.endswith("." + apex)]
+        results["subdomains"] = sorted(set(results["subdomains"]) | set(own))
+    dropped = [h for h in results["subdomains"] if not scope.in_scope(h)]
+    if dropped:
+        results["subdomains"] = [h for h in results["subdomains"] if scope.in_scope(h)]
+        results["out_of_scope"]["subdomains"] = dropped
+        console.print(f"  [dim]- {len(dropped)} subdomain(s) out of scope, not probed[/dim]")
+
+    if results["subdomains"] and "http" not in skip:
+        with console.status("[bold green]Probing live hosts..."):
+            results["alive"] = await probe_targets(
+                results["subdomains"], scope=scope, limiter=limiter
+            )
+        console.print(f"  [green]✓[/green] {len(results['alive'])} live hosts")
+
+    if results["alive"] and "headers" not in skip:
+        results["header_findings"] = audit_headers(results["alive"])
+        n_low = sum(1 for f in results["header_findings"] if f["severity"] != "info")
+        console.print(
+            f"  [green]✓[/green] {len(results['header_findings'])} header findings ({n_low} low+)"
+        )
+
+    if results["alive"] and "tls" not in skip:
+        label = "Checking TLS certificates" + (" + legacy protocols" if active else "")
+        with console.status(f"[bold green]{label}..."):
+            results["tls"], results["tls_findings"] = await check_tls(
+                results["alive"], legacy=active, limiter=limiter
+            )
+        n_bad = sum(1 for f in results["tls_findings"] if f["severity"] != "info")
+        console.print(
+            f"  [green]✓[/green] TLS checked on {len(results['tls'])} HTTPS host(s), "
+            f"{n_bad} issue(s)"
+        )
 
     if "secrets" not in skip and results["urls"]:
         with console.status("[bold green]Scanning JS files for secrets..."):
-            results["secrets"] = await scan_secrets(results["urls"])
-        console.print(f"  [green]✓[/green] {len(results['secrets'])} potential secrets")
+            found = await scan_secrets(results["urls"], scope=scope, limiter=limiter)
+        results["secrets"] = filter_by_confidence(found, cfg.secrets_min_confidence)
+        by_conf = {
+            c: sum(1 for s in results["secrets"] if s["confidence"] == c) for c in CONFIDENCE_ORDER
+        }
+        hidden = len(found) - len(results["secrets"])
+        console.print(
+            f"  [green]✓[/green] {len(results['secrets'])} potential secrets "
+            f"(high={by_conf['high']} medium={by_conf['medium']} low={by_conf['low']}"
+            + (f", {hidden} below --secrets-min-confidence" if hidden else "")
+            + ")"
+        )
 
     if active and results["alive"]:
         with console.status("[bold yellow]Testing CORS reflection (active)..."):
-            results["cors_reflective"] = await check_cors_reflection(results["alive"])
+            results["cors_reflective"] = await check_cors_reflection(
+                results["alive"], limiter=limiter
+            )
         n_reflect = sum(1 for v in results["cors_reflective"].values() if v.get("reflects"))
         console.print(
             f"  [yellow]⚠[/yellow] {n_reflect}/{len(results['alive'])} hosts reflect Origin"
@@ -168,6 +297,7 @@ async def run_one(
                         results["alive"],
                         templates=nuclei_templates,
                         tags=nuclei_tags,
+                        rate_limit=limiter.rate,
                         on_finding=table.add,
                     )
             else:
@@ -176,6 +306,7 @@ async def run_one(
                         results["alive"],
                         templates=nuclei_templates,
                         tags=nuclei_tags,
+                        rate_limit=limiter.rate,
                     )
             if enrich_cve:
                 with console.status("[bold cyan]Enriching CVEs via GitHub advisories..."):
@@ -210,6 +341,31 @@ async def run_one(
                 f"med={sev.get('medium', 0)} low={sev.get('low', 0)} info={sev.get('info', 0)}"
             )
 
+    alerts: dict[str, list[str]] = {}
+    new_hosts: set[str] = set()
+    if cfg.monitor:
+        if previous is None:
+            console.print("  [cyan]i[/cyan] monitor: first scan — saved as baseline")
+        else:
+            delta = diff_results(previous, results)
+            alerts = alert_items(delta)
+            new_hosts = {(h.get("host") or "").lower() for h in delta["added"]["alive"]}
+            (out_dir / "diff.json").write_text(json.dumps(delta, indent=2, default=str))
+            results["changes"] = {
+                "baseline_timestamp": previous.get("timestamp"),
+                "summary": delta["summary"],
+                "new": {k: len(v) for k, v in alerts.items()},
+            }
+            console.print(f"  [cyan]i[/cyan] monitor: {delta['summary']}")
+
+    results["priority"] = score_hosts(results, new_hosts)
+    top = [p for p in results["priority"] if p["score"] > 0][:3]
+    if top:
+        console.print(
+            "  [magenta]★[/magenta] look first: "
+            + ", ".join(f"{p['host']} ({p['score']})" for p in top)
+        )
+
     # Write artifacts
     json_path = out_dir / "results.json"
     json_path.write_text(json.dumps(results, indent=2, default=str))
@@ -222,11 +378,19 @@ async def run_one(
         write_html_report(results, html_path)
         console.print(f"[bold cyan]HTML:     [/bold cyan] {html_path}")
 
-    # Webhook notification
-    if webhook:
+    if cfg.monitor:
+        save_snapshot(out_dir, results, keep=keep)
+
+    # Webhook notification — in monitor mode only when something new showed up
+    if webhook and cfg.monitor and previous is not None and not alerts:
+        console.print("  [dim]nothing new — webhook not notified[/dim]")
+    elif webhook:
         platform, url = parse_webhook_target(webhook)
-        with console.status(f"[bold magenta]Posting summary to {platform} webhook..."):
-            ok = await notify_webhook(url, results, platform=platform)
+        with console.status(f"[bold magenta]Posting to {platform} webhook..."):
+            if alerts:
+                ok = await notify_alert(url, target, alerts, platform=platform)
+            else:
+                ok = await notify_webhook(url, results, platform=platform)
         if ok:
             console.print(f"  [green]✓[/green] notified {platform}")
         else:
@@ -248,11 +412,25 @@ async def run_batch(
     plugin_names: list[str],
     run_default_plugins: bool,
     nuclei_live: bool = False,
+    scope: str | None = None,
+    rate: float | None = None,
+    sources: list[str] | None = None,
+    monitor: bool = False,
+    keep: int = DEFAULT_KEEP,
+    secrets_min_confidence: str | None = None,
 ) -> int:
     targets = load_batch(path)
     console.print(f"[bold]Loaded {len(targets)} target(s) from {path}[/bold]")
     failures = 0
     for cfg in targets:
+        # CLI --scope is the fallback for entries without their own; --rate always wins
+        cfg.scope = cfg.scope or scope
+        if rate is not None:
+            cfg.rate = rate
+        cfg.sources = cfg.sources or sources
+        cfg.monitor = cfg.monitor or monitor
+        if secrets_min_confidence is not None:
+            cfg.secrets_min_confidence = secrets_min_confidence
         console.rule(f"[bold cyan]{cfg.domain}[/bold cyan]")
         try:
             await run_one(
@@ -267,6 +445,7 @@ async def run_batch(
                 enrich_cve=enrich_cve,
                 plugin_names=plugin_names,
                 run_default_plugins=run_default_plugins,
+                keep=keep,
             )
         except Exception as exc:
             failures += 1
@@ -290,6 +469,23 @@ async def run(args: argparse.Namespace) -> int:
     if discovered:
         console.print(f"[dim]Discovered user plugins: {discovered}[/dim]")
 
+    if args.scope:
+        try:
+            load_scope(Path(args.scope))
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]Invalid scope file {args.scope}: {exc}[/red]")
+            return 2
+
+    sources = [x.strip() for x in args.sources.split(",") if x.strip()] if args.sources else None
+    unknown = [x for x in sources or [] if x not in SOURCES]
+    if unknown:
+        console.print(f"[red]Unknown source(s) {unknown}; choose from {sorted(SOURCES)}[/red]")
+        return 2
+
+    if args.keep < 0:
+        console.print("[red]--keep must be 0 (keep all) or a positive number[/red]")
+        return 2
+
     if args.batch:
         return await run_batch(
             Path(args.batch),
@@ -303,6 +499,15 @@ async def run(args: argparse.Namespace) -> int:
             plugin_names=args.plugin,
             run_default_plugins=not args.no_plugins,
             nuclei_live=args.nuclei_live,
+            scope=args.scope,
+            rate=args.rate,
+            sources=sources,
+            monitor=args.monitor,
+            keep=args.keep,
+            # only override per-target settings when set explicitly on the CLI
+            secrets_min_confidence=(
+                args.secrets_min_confidence if args.secrets_min_confidence != "low" else None
+            ),
         )
 
     if not args.target or not args.output:
@@ -325,6 +530,8 @@ async def run(args: argparse.Namespace) -> int:
             ("subdomains", args.no_subdomains),
             ("wayback", args.no_wayback),
             ("secrets", args.no_secrets),
+            ("headers", args.no_headers),
+            ("tls", args.no_tls),
         )
         if flag
     ]
@@ -334,6 +541,11 @@ async def run(args: argparse.Namespace) -> int:
         active=args.active,
         nuclei=args.nuclei,
         skip=skip,
+        scope=args.scope,
+        rate=args.rate,
+        sources=sources,
+        monitor=args.monitor,
+        secrets_min_confidence=args.secrets_min_confidence,
     )
     results = await run_one(
         cfg,
@@ -345,6 +557,7 @@ async def run(args: argparse.Namespace) -> int:
         enrich_cve=args.enrich_cve,
         plugin_names=args.plugin,
         run_default_plugins=not args.no_plugins,
+        keep=args.keep,
     )
 
     # Diff mode
