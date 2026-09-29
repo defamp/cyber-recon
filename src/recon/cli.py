@@ -18,7 +18,7 @@ from .modules.headers_audit import audit_headers
 from .modules.http_probe import probe_targets
 from .modules.nuclei import nuclei_available, run_nuclei
 from .modules.secrets import scan_secrets
-from .modules.subdomains import enumerate_subdomains
+from .modules.subdomains import SOURCES, enumerate_subdomains, hosts_from_urls
 from .modules.wayback import fetch_wayback_urls
 from .notify import notify_webhook, parse_webhook_target
 from .plugins import discover as discover_user_plugins
@@ -70,6 +70,11 @@ def parse_args() -> argparse.Namespace:
         "--rate",
         type=float,
         help="Max requests/second against the target (overrides the scope file's rate_limit)",
+    )
+    p.add_argument(
+        "--sources",
+        help=f"Comma-separated passive subdomain sources (default: all of {','.join(SOURCES)}). "
+        "Optional API keys: CERTSPOTTER_API_KEY, OTX_API_KEY, URLSCAN_API_KEY",
     )
     p.add_argument("--diff", help="Path to baseline results.json — emit delta report")
     p.add_argument(
@@ -136,6 +141,7 @@ async def run_one(
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         "active": bool(active or nuclei),
         "subdomains": [],
+        "subdomain_sources": {},
         "alive": [],
         "urls": [],
         "secrets": [],
@@ -154,11 +160,35 @@ async def run_one(
 
     if "subdomains" not in skip:
         n_err = len(errors)
+        stats: dict[str, int] = {}
         with console.status(f"[bold green]Enumerating subdomains for {target}..."):
-            results["subdomains"] = await enumerate_subdomains(target, errors)
+            results["subdomains"] = await enumerate_subdomains(
+                target, errors, sources=cfg.sources, stats=stats
+            )
+        results["subdomain_sources"] = stats
         mark = "[green]✓[/green]" if len(errors) == n_err else "[yellow]⚠[/yellow]"
-        console.print(f"  {mark} {len(results['subdomains'])} subdomains")
+        per_source = ", ".join(f"{k}={v}" for k, v in stats.items())
+        console.print(f"  {mark} {len(results['subdomains'])} subdomains ({per_source})")
         report_errors(n_err)
+
+    # Wayback runs before probing so hosts it has seen get probed too
+    if "wayback" not in skip:
+        n_err = len(errors)
+        with console.status("[bold green]Fetching Wayback URLs..."):
+            results["urls"] = await fetch_wayback_urls(target, errors)
+        mark = "[green]✓[/green]" if len(errors) == n_err else "[yellow]⚠[/yellow]"
+        console.print(f"  {mark} {len(results['urls'])} historical URLs")
+        report_errors(n_err)
+        if "subdomains" not in skip:
+            known = set(results["subdomains"])
+            extra = [h for h in hosts_from_urls(target, results["urls"]) if h not in known]
+            if extra:
+                results["subdomains"] = sorted(known | set(extra))
+                console.print(f"  [green]✓[/green] +{len(extra)} subdomains from Wayback URLs")
+            results["subdomain_sources"]["wayback"] = len(extra)
+        in_scope_urls = [u for u in results["urls"] if scope.url_in_scope(u)]
+        results["out_of_scope"]["urls"] = len(results["urls"]) - len(in_scope_urls)
+        results["urls"] = in_scope_urls
 
     # Hosts listed literally in the scope file are worth probing even if no
     # passive source knows them.
@@ -185,17 +215,6 @@ async def run_one(
         console.print(
             f"  [green]✓[/green] {len(results['header_findings'])} header findings ({n_low} low+)"
         )
-
-    if "wayback" not in skip:
-        n_err = len(errors)
-        with console.status("[bold green]Fetching Wayback URLs..."):
-            results["urls"] = await fetch_wayback_urls(target, errors)
-        mark = "[green]✓[/green]" if len(errors) == n_err else "[yellow]⚠[/yellow]"
-        console.print(f"  {mark} {len(results['urls'])} historical URLs")
-        report_errors(n_err)
-        in_scope_urls = [u for u in results["urls"] if scope.url_in_scope(u)]
-        results["out_of_scope"]["urls"] = len(results["urls"]) - len(in_scope_urls)
-        results["urls"] = in_scope_urls
 
     if "secrets" not in skip and results["urls"]:
         with console.status("[bold green]Scanning JS files for secrets..."):
@@ -308,6 +327,7 @@ async def run_batch(
     nuclei_live: bool = False,
     scope: str | None = None,
     rate: float | None = None,
+    sources: list[str] | None = None,
 ) -> int:
     targets = load_batch(path)
     console.print(f"[bold]Loaded {len(targets)} target(s) from {path}[/bold]")
@@ -317,6 +337,7 @@ async def run_batch(
         cfg.scope = cfg.scope or scope
         if rate is not None:
             cfg.rate = rate
+        cfg.sources = cfg.sources or sources
         console.rule(f"[bold cyan]{cfg.domain}[/bold cyan]")
         try:
             await run_one(
@@ -361,6 +382,12 @@ async def run(args: argparse.Namespace) -> int:
             console.print(f"[red]Invalid scope file {args.scope}: {exc}[/red]")
             return 2
 
+    sources = [x.strip() for x in args.sources.split(",") if x.strip()] if args.sources else None
+    unknown = [x for x in sources or [] if x not in SOURCES]
+    if unknown:
+        console.print(f"[red]Unknown source(s) {unknown}; choose from {sorted(SOURCES)}[/red]")
+        return 2
+
     if args.batch:
         return await run_batch(
             Path(args.batch),
@@ -376,6 +403,7 @@ async def run(args: argparse.Namespace) -> int:
             nuclei_live=args.nuclei_live,
             scope=args.scope,
             rate=args.rate,
+            sources=sources,
         )
 
     if not args.target or not args.output:
@@ -410,6 +438,7 @@ async def run(args: argparse.Namespace) -> int:
         skip=skip,
         scope=args.scope,
         rate=args.rate,
+        sources=sources,
     )
     results = await run_one(
         cfg,

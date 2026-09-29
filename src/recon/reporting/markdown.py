@@ -22,6 +22,12 @@ def scope_summary(results: dict) -> str:
     return " · ".join(parts)
 
 
+def source_summary(results: dict) -> str:
+    """ "crtsh=12, otx=3, …" — hosts each passive source contributed (before scope)."""
+    stats = results.get("subdomain_sources") or {}
+    return ", ".join(f"{name}={count}" for name, count in stats.items())
+
+
 def write_markdown_report(results: dict, path: Path) -> None:
     target = results.get("target", "?")
     now = datetime.now(UTC).isoformat(timespec="seconds")
@@ -42,6 +48,9 @@ def write_markdown_report(results: dict, path: Path) -> None:
 
     subdomains = results.get("subdomains", [])
     lines.append(f"## Subdomains ({len(subdomains)})\n")
+    by_source = source_summary(results)
+    if by_source:
+        lines.append(f"_Per source: {by_source}_\n")
     if subdomains:
         lines.extend(f"- `{s}`" for s in subdomains)
     else:

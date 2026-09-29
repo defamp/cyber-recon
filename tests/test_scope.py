@@ -167,7 +167,7 @@ def _scope_file(tmp_path: Path, text: str) -> str:
 async def test_run_one_applies_scope(tmp_path: Path, monkeypatch):
     probed: dict = {}
 
-    async def fake_subs(domain, errors):
+    async def fake_subs(domain, errors, **_):
         return ["a.x.com", "old.x.com"]
 
     async def fake_wayback(domain, errors):

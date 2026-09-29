@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..modules.headers_audit import finding_sort_key
-from .markdown import scope_summary
+from .markdown import scope_summary, source_summary
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -110,7 +110,7 @@ footer {{ margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--borde
 {hosts_html}
 
 <h2 id="subdomains">Subdomains <span class="section-count">({n_subs})</span></h2>
-{subs_html}
+{sources_html}{subs_html}
 
 <h2 id="cors">CORS analysis <span class="section-count">({n_cors_issues} issues)</span></h2>
 {cors_html}
@@ -453,6 +453,11 @@ def write_html_report(results: dict, path: Path) -> None:
         headers_html=_render_headers(header_findings),
         errors_html=_render_errors(results.get("errors") or []),
         mode="active modules enabled" if results.get("active") else "passive only",
+        sources_html=(
+            f'<p class="meta">Per source: {html.escape(source_summary(results))}</p>'
+            if source_summary(results)
+            else ""
+        ),
         scope_html=(
             f" &middot; {html.escape(scope_summary(results))}" if scope_summary(results) else ""
         ),

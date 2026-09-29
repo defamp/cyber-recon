@@ -179,7 +179,7 @@ async def test_run_one_audits_probed_hosts_and_honours_skip(tmp_path: Path, monk
     async def fake_probe(hosts, **_):
         return [_host()]
 
-    async def fake_subs(domain, errors):
+    async def fake_subs(domain, errors, **_):
         return ["a.x.com"]
 
     monkeypatch.setattr("recon.cli.probe_targets", fake_probe)

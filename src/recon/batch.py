@@ -17,6 +17,7 @@ class TargetConfig:
     notify: dict[str, Any] = field(default_factory=dict)
     scope: str | None = None  # path to a scope file (see recon.scope)
     rate: float | None = None  # max requests/second against the target
+    sources: list[str] | None = None  # passive subdomain sources; None = all
 
     @classmethod
     def from_dict(cls, d: dict) -> "TargetConfig":
@@ -31,6 +32,7 @@ class TargetConfig:
             notify=d.get("notify", {}),
             scope=d.get("scope"),
             rate=d.get("rate"),
+            sources=d.get("sources"),
         )
 
 

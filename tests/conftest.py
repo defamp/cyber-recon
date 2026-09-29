@@ -64,6 +64,7 @@ class FakeSession:
     def __init__(self, routes):
         self.routes = routes
         self.urls: list[str] = []
+        self.kwargs: list[dict] = []  # request kwargs (headers, timeout, …) per call
 
     def __call__(self, *a, **kw):
         return self
@@ -76,6 +77,7 @@ class FakeSession:
 
     def get(self, url, **kw):
         self.urls.append(url)
+        self.kwargs.append(kw)
         for prefix, resp in self.routes.items():
             if url.startswith(prefix):
                 if isinstance(resp, Exception):

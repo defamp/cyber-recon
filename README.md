@@ -15,7 +15,7 @@ Single CLI that runs a coordinated recon sweep against a target domain, with
 
 | Module | What it finds | Active? |
 |---|---|---|
-| Subdomain enum | crt.sh + HackerTarget passive aggregation | passive |
+| Subdomain enum | crt.sh, HackerTarget, CertSpotter, AlienVault OTX, urlscan.io + hosts seen in Wayback URLs | passive |
 | HTTP probe | DNS resolve, status, server, title, tech fingerprint | passive |
 | Security headers | HSTS, CSP (unsafe-inline/eval, wildcard), clickjacking, nosniff, Referrer-Policy, version disclosure, cookie flags — from headers already fetched by the probe | passive (`--no-headers` to skip) |
 | CORS reflection | Sends random Origin header, detects arbitrary reflection | opt-in `--active` |
@@ -84,6 +84,27 @@ PYTHONPATH=src python3 -m recon.cli --target example.com --output output/example
   same hosts as before, but redirects off that domain are no longer followed.
 - In batch mode, `scope:` / `rate:` can be set per target; CLI `--scope` is the
   fallback and CLI `--rate` overrides.
+
+### Subdomain sources
+
+All sources are passive third-party datasets and run in parallel; one failing
+source is reported under `errors` and does not stop the others. Per-source
+counts are stored in `results.json` → `subdomain_sources` and shown in the
+reports.
+
+| Source | Name for `--sources` | Optional API key (env var) |
+|---|---|---|
+| crt.sh | `crtsh` | — |
+| HackerTarget | `hackertarget` | — |
+| CertSpotter (first page of issuances) | `certspotter` | `CERTSPOTTER_API_KEY` |
+| AlienVault OTX passive DNS | `otx` | `OTX_API_KEY` |
+| urlscan.io search (100 results) | `urlscan` | `URLSCAN_API_KEY` |
+
+Hosts found in Wayback URLs are also added before probing (no extra request).
+Pick sources with `--sources crtsh,certspotter` or `sources: [...]` per batch
+target. Without keys the free quotas are small; an HTTP 429 is reported with
+a hint to set one. Quotas and response formats of these third-party APIs
+change over time — check each provider's current terms.
 
 ### Diff vs baseline scan
 
@@ -225,7 +246,7 @@ src/recon/
 ├── bundled_plugins/          # plugins shipped with the tool
 │   └── severity.py           # (tally severities — active by default)
 ├── modules/
-│   ├── subdomains.py         # crt.sh + HackerTarget
+│   ├── subdomains.py         # passive sources: crt.sh, HackerTarget, CertSpotter, OTX, urlscan
 │   ├── http_probe.py         # DNS + HTTP probe + tech fingerprint
 │   ├── headers_audit.py      # security header + cookie flag audit
 │   ├── cors.py               # Origin reflection test
