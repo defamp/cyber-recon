@@ -193,3 +193,10 @@ async def test_run_one_audits_probed_hosts_and_honours_skip(tmp_path: Path, monk
     )
     result = await run_one(cfg, no_html=True)
     assert result["header_findings"] == []
+
+
+def test_redirect_only_gets_transport_and_cookie_checks():
+    host = _host(cookies=["sid=1"], status=302)
+    host["security_headers"] = {"server": "nginx/1.25.1"}
+    checks = _checks(audit_host(host))
+    assert checks == {"hsts-missing", "cookie-flags", "version-disclosure"}

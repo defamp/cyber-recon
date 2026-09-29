@@ -109,3 +109,18 @@ def test_tls_findings_are_diffed_and_alerted():
     delta = diff_results({"tls_findings": []}, {"tls_findings": [f, info]})
     assert len(delta["added"]["tls_findings"]) == 2
     assert alert_items(delta) == {"TLS issues": ["a.x.com: cert-expired (medium)"]}
+
+
+def test_keywords_ignore_the_target_domain_itself():
+    results = {
+        "target": "api-corp.test",
+        "alive": [
+            _alive("www.api-corp.test", title="Welcome to www.api-corp.test"),
+            _alive("staging.api-corp.test"),
+            _alive("api-corp.test"),
+        ],
+    }
+    ranked = _by_host(score_hosts(results))
+    assert ranked["www.api-corp.test"]["score"] == 0
+    assert ranked["api-corp.test"]["score"] == 0
+    assert ranked["staging.api-corp.test"]["reasons"] == ["+8 keywords: staging"]

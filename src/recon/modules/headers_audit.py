@@ -134,6 +134,14 @@ def audit_host(host: dict) -> list[dict]:
         + _check_misc(headers)
         + _check_cookies(host.get("set_cookies") or [], is_https)
     )
+    if 300 <= status < 400:
+        # A redirect renders nothing: CSP, framing, nosniff and Referrer-Policy
+        # don't apply. HSTS, cookies and version banners still do.
+        checks = [
+            c
+            for c in checks
+            if c[0].startswith("hsts") or c[0] in ("cookie-flags", "version-disclosure")
+        ]
     return [
         asdict(
             HeaderFinding(

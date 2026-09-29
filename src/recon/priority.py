@@ -37,9 +37,18 @@ def _host_of(value: str) -> str:
     return value.lower()
 
 
-def _keywords(host: str, title: str) -> list[str]:
+def _keywords(host: str, title: str, target: str = "") -> list[str]:
+    host = host.lower()
+    target = target.lower().strip(".")
+    # Only the part left of the target domain: for target "api-corp.com" or
+    # "x.test" every host would otherwise score the same keyword.
+    title = title.lower()
+    if target:
+        if host == target or host.endswith("." + target):
+            host = host[: -len(target)]
+        title = title.replace(target, " ")  # "Welcome to api-corp.com" says nothing
     # Whole labels/words only: "latest" must not count as "test"
-    words = set(re.split(r"[.\-_]", host.lower())) | set(re.findall(r"[a-z]+", title.lower()))
+    words = set(re.split(r"[.\-_]", host)) | set(re.findall(r"[a-z]+", title))
     return sorted(words & KEYWORDS)
 
 
@@ -81,7 +90,7 @@ def score_hosts(results: dict, new_hosts: set[str] | None = None) -> list[dict]:
         reasons = list(by_host.get(host, []))
         if pts := min(finding_pts.get(host, 0), FINDING_CAP):
             reasons.append((pts, "header/TLS weaknesses"))
-        if words := _keywords(host, h.get("title") or ""):
+        if words := _keywords(host, h.get("title") or "", results.get("target") or ""):
             reasons.append(
                 (min(KEYWORD_POINTS * len(words), KEYWORD_CAP), f"keywords: {', '.join(words)}")
             )
